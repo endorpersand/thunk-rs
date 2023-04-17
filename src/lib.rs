@@ -44,6 +44,11 @@ impl<T, F: FnOnce() -> T> Thunk<T, F> {
     pub fn dethunk_all<I: IntoIterator<Item=Thunk<T, F>>>(t: I) -> impl Iterator<Item=T> {
         t.into_iter().map(Thunk::dethunk)
     }
+    pub fn get_all<'a, I: IntoIterator<Item=&'a Thunk<T, F>>>(t: I) -> impl Iterator<Item=&'a T> 
+        where T: 'a, F: 'a
+    {
+        t.into_iter().map(Thunk::get)
+    }
 }
 
 #[cfg(test)]
@@ -80,11 +85,11 @@ mod tests {
         let m = vec![1, 2, 4, 5, 9, 7, 4, 1, 2, 329, 23, 23, 21, 123, 123, 0, 324];
         let (m, it) = m.into_iter()
             .fold((vec![], 0), |(mut vec, r), t| {
-                vec.push(y.as_ref());
+                vec.push(&y);
                 (vec, r.max(t))
             });
         y.set(it).ok().unwrap();
-        let m: Vec<_> = Thunk::dethunk_all(m)
+        let m: Vec<_> = Thunk::get_all(m)
             .copied()
             .collect();
         println!("{m:?}");
