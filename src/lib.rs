@@ -16,10 +16,10 @@ impl<T, F: FnOnce() -> T> Thunk<T, F> {
     }
 
     pub fn as_ref<'a>(&'a self) -> Thunk<&'a T, Box<dyn FnOnce() -> &'a T + 'a>> {
-        Thunk::new(Box::new(|| Thunk::get(self)))
+        Thunk::new(Box::new(|| Thunk::force(self)))
     }
 
-    pub fn get(&self) -> &T {
+    pub fn force(&self) -> &T {
         self.inner.get_or_init(|| match self.init.take() {
             Some(f) => f(),
             None => panic!("no initializer"),
@@ -37,17 +37,17 @@ impl<T, F: FnOnce() -> T> Thunk<T, F> {
     }
 
     pub fn dethunk(self) -> T {
-        Thunk::get(&self);
+        Thunk::force(&self);
         self.inner.into_inner().expect("resolved dethunk")
     }
 
     pub fn dethunk_all<I: IntoIterator<Item=Thunk<T, F>>>(t: I) -> impl Iterator<Item=T> {
         t.into_iter().map(Thunk::dethunk)
     }
-    pub fn get_all<'a, I: IntoIterator<Item=&'a Thunk<T, F>>>(t: I) -> impl Iterator<Item=&'a T> 
+    pub fn force_all<'a, I: IntoIterator<Item=&'a Thunk<T, F>>>(t: I) -> impl Iterator<Item=&'a T> 
         where T: 'a, F: 'a
     {
-        t.into_iter().map(Thunk::get)
+        t.into_iter().map(Thunk::force)
     }
 }
 
@@ -75,8 +75,8 @@ mod tests {
 
         let xy = x.as_ref().map(|t| t + 1);
         let _ = x.set(13);
-        println!("{:?}", xy.get());
-        println!("{:?}", z.get());
+        println!("{:?}", xy.force());
+        println!("{:?}", z.force());
     }
 
     #[test]
@@ -89,7 +89,7 @@ mod tests {
                 (vec, r.max(t))
             });
         y.set(it).ok().unwrap();
-        let m: Vec<_> = Thunk::get_all(m)
+        let m: Vec<_> = Thunk::force_all(m)
             .copied()
             .collect();
         println!("{m:?}");
