@@ -16,7 +16,7 @@ impl<T, F: FnOnce() -> T> Thunk<T, F> {
     }
 
     pub fn as_ref<'a>(&'a self) -> Thunk<&'a T, Box<dyn FnOnce() -> &'a T + 'a>> {
-        Thunk::new(Box::new(|| Thunk::force(self)))
+        Thunk::new(Box::new(|| self.force()))
     }
 
     pub fn force(&self) -> &T {
@@ -29,15 +29,16 @@ impl<T, F: FnOnce() -> T> Thunk<T, F> {
     pub fn map<'a, U>(self, f: impl FnOnce(T) -> U + 'a) -> Thunk<U, Box<dyn FnOnce() -> U + 'a>> 
         where T: 'a, F: 'a
     {
-        Thunk::new(Box::new(|| f(Thunk::dethunk(self))))
+        Thunk::new(Box::new(|| f(self.dethunk())))
     }
 
     pub fn set(&self, val: T) -> Result<(), T> {
+        self.init.take();
         self.inner.set(val)
     }
 
     pub fn dethunk(self) -> T {
-        Thunk::force(&self);
+        self.force();
         self.inner.into_inner().expect("resolved dethunk")
     }
 
