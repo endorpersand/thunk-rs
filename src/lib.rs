@@ -3,7 +3,6 @@ use std::cell::{OnceCell, Cell};
 pub trait Lazy<T> {
     fn resolve_ref(&self) -> &T;
     fn resolve_mut(&mut self) -> &mut T;
-    fn resolve(self) -> T;
 }
 
 impl<T> Lazy<T> for T {
@@ -12,10 +11,6 @@ impl<T> Lazy<T> for T {
     }
 
     fn resolve_mut(&mut self) -> &mut T {
-        self
-    }
-
-    fn resolve(self) -> T {
         self
     }
 }
@@ -28,10 +23,6 @@ impl<T, F: FnOnce() -> T> Lazy<T> for ClosureThunk<T, F> {
     fn resolve_mut(&mut self) -> &mut T {
         self.force_mut()
     }
-
-    fn resolve(self) -> T {
-        self.dethunk()
-    }
 }
 impl<T, A> Lazy<T> for Thunk<T, A> {
     fn resolve_ref(&self) -> &T {
@@ -41,12 +32,7 @@ impl<T, A> Lazy<T> for Thunk<T, A> {
     fn resolve_mut(&mut self) -> &mut T {
         self.force_mut()
     }
-
-    fn resolve(self) -> T {
-        self.dethunk()
-    }
 }
-
 struct ThunkInner<T, F> {
     inner: OnceCell<T>,
     init: Cell<Option<F>>
@@ -137,6 +123,11 @@ impl<T> Thunk<T, ()> {
         Thunk::new(|_| panic!("undef"), ())
     }
 }
+impl<T> Thunk<T, fn() -> T> {
+    pub fn nz(f: fn() -> T) -> Self {
+        Thunk::new(|f| f(), f)
+    }
+}
 impl<T, A> Thunk<T, A> {
     pub fn new(f: fn(A) -> T, a: A) -> Self {
         Self { inner: ThunkInner::new((f, a)) }
@@ -172,6 +163,12 @@ impl<T, A> Thunk<T, A> {
     pub fn is_initialized(&self) -> bool {
         self.inner.is_initialized()
     }
+
+    pub fn boxed<'a>(self) -> Box<dyn Lazy<T> + 'a> 
+        where T: 'a, A: 'a
+    {
+        Box::new(self)
+    }
 }
 impl<T: Clone, A> Thunk<T, A> {
     pub fn cloned(&self) -> Thunk<T, &Self> {
@@ -197,27 +194,53 @@ impl<T: Clone, F: Clone> Clone for ThunkInner<T, F> {
     }
 }
 
+#[allow(unused_macros)]
+macro_rules! thunk_arg {
+    ($i:ident) => {$i};
+    ($_:ident = $e:expr) => {$e};
+}
+#[allow(unused_macros)]
+macro_rules! thunk_args {
+    ($($i:ident $(= $ie:expr)?),*) => {
+        ($(thunk_arg!($i $(= $ie)?)),*)
+    };
+}
+#[allow(unused_macros)]
+macro_rules! thunk {
+    (|| $e:expr) => { $crate::Thunk::nz(|| $e) };
+    (|$i:ident $(= ($ie:expr))?| $e:expr) => {
+        $crate::Thunk::new(|$i| $e, thunk_arg!($i $(= $ie)?))
+    };
+    (|($($i:ident $(= $ie:expr)?),+)| $e:expr) => {
+        $crate::Thunk::new(|($($i),+)| $e, thunk_args!($($i $(= $ie)?),+))
+    };
+}
+
 #[cfg(test)]
 mod tests {
-    use crate::{ClosureThunk, Lazy, Thunk};
+    use crate::{Lazy, Thunk};
 
     #[test]
     fn thunky() {
-        let x = ClosureThunk::new(|| {
+        let x = thunk!(|| {
             println!("initialized x");
             2u32
         });
-        let y = ClosureThunk::new(|| {
+        let y = thunk!(|| {
             println!("initialized y");
             3u32
         });
         let y = vec![
-            x.as_ref().map(|t| t + 14), 
-            x.as_ref().map(u32::clone), 
-            y.as_ref().map(u32::clone), 
-            x.as_ref().map(u32::clone)
+            x.as_ref().map(|t| t + 14).boxed(), 
+            x.cloned().boxed(), 
+            y.cloned().boxed(), 
+            x.cloned().boxed()
         ];
-        let z: ClosureThunk<Vec<_>, _> = ClosureThunk::new(|| y.into_iter().map(ClosureThunk::dethunk).collect());
+        let z: Thunk<Vec<_>, _> = thunk!(|y| {
+            y.into_iter()
+                .map(|b| *(*b).resolve_ref())
+                .collect()
+        });
 
         let xy = x.as_ref().map(|t| t + 1);
         let _ = x.set(13);
@@ -228,17 +251,19 @@ mod tests {
     #[test]
     fn doubler() {
         fn and<'a>(left: &'a dyn Lazy<bool>, right: &'a dyn Lazy<bool>) -> impl Lazy<bool> + 'a {
-            Thunk::new(|(l, r)| *l.resolve_ref() && *r.resolve_ref(), (left, right))
+            thunk!(|(l = left, r = right)| *l.resolve_ref() && *r.resolve_ref())
         }
 
-        let x: ClosureThunk<bool> = ClosureThunk::new(|| false);
-        let y = ClosureThunk::undef();
-        let w: Box<dyn Lazy<bool>> = Box::new(Thunk::new(|(x, y)| and(x, y), (&x, &y)).map(|t| !t.resolve_ref()));
+        let x = thunk!(|| false);
+        let y = Thunk::undef();
+        let w = thunk!(|(x = &x, y = &y)| and(x, y))
+            .map(|t| !t.resolve_ref())
+            .boxed();
         println!("{}", (*w).resolve_ref());
     }
     #[test]
     fn time_travel() {
-        let y = ClosureThunk::<usize>::undef();
+        let y: Thunk<usize, _> = Thunk::undef();
         let m = vec![1, 2, 4, 5, 9, 7, 4, 1, 2, 329, 23, 23, 21, 123, 123, 0, 324];
         let (m, it) = m.into_iter()
             .fold((vec![], 0), |(mut vec, r), t| {
@@ -247,7 +272,7 @@ mod tests {
             });
         y.set(it).ok().unwrap();
         let m: Vec<_> = m.into_iter()
-            .map(ClosureThunk::force)
+            .map(Thunk::force)
             .copied()
             .collect();
         println!("{m:?}");
