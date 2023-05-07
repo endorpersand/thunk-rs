@@ -54,7 +54,7 @@ pub struct ClosureThunk<T, F = fn() -> T> {
 
 impl<T> ClosureThunk<T> {
     pub fn undef() -> Self {
-        ClosureThunk { inner: OnceCell::new(), init: Cell::new(Some(|| panic!("undef"))) }
+        ClosureThunk::new(|| panic!("undef"))
     }
 }
 impl<T, F: FnOnce() -> T> ClosureThunk<T, F> {
@@ -105,13 +105,18 @@ pub struct Thunk<T, A> {
     init: Cell<Option<(fn(A) -> T, A)>>
 }
 
+impl<T> Thunk<T, ()> {
+    pub fn undef() -> Self {
+        Thunk::new(|_| panic!("undef"), ())
+    }
+}
 impl<T, A> Thunk<T, A> {
     pub fn new(f: fn(A) -> T, a: A) -> Self {
         Self { inner: OnceCell::new(), init: Cell::new(Some((f, a))) }
     }
 
     pub fn as_ref(&self) -> Thunk<&T, &Self> {
-        Thunk::new(|t| t.force(), self)
+        Thunk::new(Thunk::force, self)
     }
 
     pub fn force(&self) -> &T {
@@ -146,13 +151,13 @@ impl<T, A> Thunk<T, A> {
     }
 }
 impl<T: Clone, A> Thunk<T, A> {
-    pub fn cloned(&self) -> Thunk<T, Thunk<&T, &Self>> {
-        Thunk::new(|t| t.dethunk().clone(), self.as_ref())
+    pub fn cloned(&self) -> Thunk<T, &Self> {
+        Thunk::new(|t| t.force().clone(), self)
     }
 }
 impl<T: Copy, A> Thunk<T, A> {
-    pub fn copied(&self) -> Thunk<T, Thunk<&T, &Self>> {
-        Thunk::new(|t| *t.dethunk(), self.as_ref())
+    pub fn copied(&self) -> Thunk<T, &Self> {
+        Thunk::new(|t| *t.force(), self)
     }
 }
 
