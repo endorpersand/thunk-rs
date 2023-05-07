@@ -62,7 +62,7 @@ impl<T> Thunk<fn() -> T> {
     pub fn undef() -> Self {
         Thunk::with(|| panic!("undef"))
     }
-    pub fn known(t: T) -> Self {
+    pub fn of(t: T) -> Self {
         let thunk = Thunk::undef();
         thunk.set(t)
             .ok()
