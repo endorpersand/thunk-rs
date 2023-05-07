@@ -47,9 +47,40 @@ impl<T, A> Lazy<T> for Thunk<T, A> {
     }
 }
 
-pub struct ClosureThunk<T, F = fn() -> T> {
+struct ThunkInner<T, F> {
     inner: OnceCell<T>,
     init: Cell<Option<F>>
+}
+impl<T, F> ThunkInner<T, F> {
+    fn new(f: F) -> Self {
+        ThunkInner { inner: OnceCell::new(), init: Cell::new(Some(f)) }
+    }
+
+    fn force(&self, r: impl FnOnce(F) -> T) -> &T {
+        self.inner.get_or_init(|| match self.init.take() {
+            Some(f) => r(f),
+            None => panic!("no initializer"),
+        })
+    }
+
+    fn get_mut(&mut self) -> Option<&mut T> {
+        self.inner.get_mut()
+    }
+    fn into_inner(self) -> Option<T> {
+        self.inner.into_inner()
+    }
+    fn set(&self, val: T) -> Result<(), T> {
+        self.init.take();
+        self.inner.set(val)
+    }
+    fn is_initialized(&self) -> bool {
+        self.inner.get().is_some()
+    }
+}
+
+#[derive(Clone)]
+pub struct ClosureThunk<T, F = fn() -> T> {
+    inner: ThunkInner<T, F>
 }
 
 impl<T> ClosureThunk<T> {
@@ -59,7 +90,7 @@ impl<T> ClosureThunk<T> {
 }
 impl<T, F: FnOnce() -> T> ClosureThunk<T, F> {
     pub fn new(f: F) -> Self {
-        ClosureThunk { inner: OnceCell::new(), init: Cell::new(Some(f)) }
+        ClosureThunk { inner: ThunkInner::new(f) }
     }
 
     pub fn as_ref<'a>(&'a self) -> ClosureThunk<&'a T, Box<dyn FnOnce() -> &'a T + 'a>> {
@@ -67,15 +98,12 @@ impl<T, F: FnOnce() -> T> ClosureThunk<T, F> {
     }
 
     pub fn force(&self) -> &T {
-        self.inner.get_or_init(|| match self.init.take() {
-            Some(f) => f(),
-            None => panic!("no initializer"),
-        })
+        self.inner.force(|f| f())
     }
 
     pub fn force_mut(&mut self) -> &mut T {
         self.force();
-        self.inner.get_mut().unwrap()
+        self.inner.get_mut().expect("force should have succeeded")
     }
 
     pub fn map<'a, U>(self, f: impl FnOnce(T) -> U + 'a) -> ClosureThunk<U, Box<dyn FnOnce() -> U + 'a>> 
@@ -85,24 +113,23 @@ impl<T, F: FnOnce() -> T> ClosureThunk<T, F> {
     }
 
     pub fn set(&self, val: T) -> Result<(), T> {
-        self.init.take();
         self.inner.set(val)
     }
 
     pub fn dethunk(self) -> T {
         self.force();
-        self.inner.into_inner().expect("resolved dethunk")
+        self.inner.into_inner().expect("force should have succeeded")
     }
 
     pub fn is_initialized(&self) -> bool {
-        self.inner.get().is_some()
+        self.inner.is_initialized()
     }
 }
 
+#[derive(Clone)]
 pub struct Thunk<T, A> {
-    inner: OnceCell<T>,
     #[allow(clippy::type_complexity)]
-    init: Cell<Option<(fn(A) -> T, A)>>
+    inner: ThunkInner<T, (fn(A) -> T, A)>
 }
 
 impl<T> Thunk<T, ()> {
@@ -112,7 +139,7 @@ impl<T> Thunk<T, ()> {
 }
 impl<T, A> Thunk<T, A> {
     pub fn new(f: fn(A) -> T, a: A) -> Self {
-        Self { inner: OnceCell::new(), init: Cell::new(Some((f, a))) }
+        Self { inner: ThunkInner::new((f, a)) }
     }
 
     pub fn as_ref(&self) -> Thunk<&T, &Self> {
@@ -120,15 +147,12 @@ impl<T, A> Thunk<T, A> {
     }
 
     pub fn force(&self) -> &T {
-        self.inner.get_or_init(|| match self.init.take() {
-            Some((f, a)) => f(a),
-            None => panic!("no initializer"),
-        })
+        self.inner.force(|(f, a)| f(a))
     }
 
     pub fn force_mut(&mut self) -> &mut T {
         self.force();
-        self.inner.get_mut().unwrap()
+        self.inner.get_mut().expect("force should have succeeded")
     }
 
     #[allow(clippy::type_complexity)]
@@ -137,17 +161,16 @@ impl<T, A> Thunk<T, A> {
     }
 
     pub fn set(&self, val: T) -> Result<(), T> {
-        self.init.take();
         self.inner.set(val)
     }
 
     pub fn dethunk(self) -> T {
         self.force();
-        self.inner.into_inner().expect("resolved dethunk")
+        self.inner.into_inner().expect("force should have succeeded")
     }
 
     pub fn is_initialized(&self) -> bool {
-        self.inner.get().is_some()
+        self.inner.is_initialized()
     }
 }
 impl<T: Clone, A> Thunk<T, A> {
@@ -161,29 +184,16 @@ impl<T: Copy, A> Thunk<T, A> {
     }
 }
 
-impl<T: Clone> Clone for ClosureThunk<T> {
+impl<T: Clone, F: Clone> Clone for ThunkInner<T, F> {
     fn clone(&self) -> Self {
-        Self { 
-            inner: OnceCell::clone(&self.inner),
-            init: self.init.clone()
-        }
-    }
-}
-impl<T: Clone, A: Clone> Clone for Thunk<T, A> {
-    fn clone(&self) -> Self {
-        Self { 
-            inner: OnceCell::clone(&self.inner),
-            init: match self.init.take() {
-                Some(t) => {
-                    let tc = t.clone();
-                    self.init.replace(Some(t));
-                    Cell::new(Some(tc))
-                },
-                None => {
-                    Cell::new(None)
-                },
-            }
-        }
+        Self { inner: self.inner.clone(), init: match self.init.take() {
+            Some(t) => {
+                let tc = t.clone();
+                self.init.replace(Some(t));
+                Cell::new(Some(tc))
+            },
+            None => Cell::new(None),
+        } }
     }
 }
 
