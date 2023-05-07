@@ -20,7 +20,7 @@ impl<T> Lazy<T> for T {
     }
 }
 
-impl<T, F: FnOnce() -> T> Lazy<T> for Thunk<T, F> {
+impl<T, F: FnOnce() -> T> Lazy<T> for ClosureThunk<T, F> {
     fn resolve_ref(&self) -> &T {
         self.force()
     }
@@ -33,7 +33,7 @@ impl<T, F: FnOnce() -> T> Lazy<T> for Thunk<T, F> {
         self.dethunk()
     }
 }
-impl<T, A> Lazy<T> for DepThunk<T, A> {
+impl<T, A> Lazy<T> for Thunk<T, A> {
     fn resolve_ref(&self) -> &T {
         self.force()
     }
@@ -47,23 +47,23 @@ impl<T, A> Lazy<T> for DepThunk<T, A> {
     }
 }
 
-pub struct Thunk<T, F = fn() -> T> {
+pub struct ClosureThunk<T, F = fn() -> T> {
     inner: OnceCell<T>,
     init: Cell<Option<F>>
 }
 
-impl<T> Thunk<T> {
+impl<T> ClosureThunk<T> {
     pub fn undef() -> Self {
-        Thunk { inner: OnceCell::new(), init: Cell::new(Some(|| panic!("undef"))) }
+        ClosureThunk { inner: OnceCell::new(), init: Cell::new(Some(|| panic!("undef"))) }
     }
 }
-impl<T, F: FnOnce() -> T> Thunk<T, F> {
+impl<T, F: FnOnce() -> T> ClosureThunk<T, F> {
     pub fn new(f: F) -> Self {
-        Thunk { inner: OnceCell::new(), init: Cell::new(Some(f)) }
+        ClosureThunk { inner: OnceCell::new(), init: Cell::new(Some(f)) }
     }
 
-    pub fn as_ref<'a>(&'a self) -> Thunk<&'a T, Box<dyn FnOnce() -> &'a T + 'a>> {
-        Thunk::new(Box::new(|| self.force()))
+    pub fn as_ref<'a>(&'a self) -> ClosureThunk<&'a T, Box<dyn FnOnce() -> &'a T + 'a>> {
+        ClosureThunk::new(Box::new(|| self.force()))
     }
 
     pub fn force(&self) -> &T {
@@ -78,10 +78,10 @@ impl<T, F: FnOnce() -> T> Thunk<T, F> {
         self.inner.get_mut().unwrap()
     }
 
-    pub fn map<'a, U>(self, f: impl FnOnce(T) -> U + 'a) -> Thunk<U, Box<dyn FnOnce() -> U + 'a>> 
+    pub fn map<'a, U>(self, f: impl FnOnce(T) -> U + 'a) -> ClosureThunk<U, Box<dyn FnOnce() -> U + 'a>> 
         where T: 'a, F: 'a
     {
-        Thunk::new(Box::new(|| f(self.dethunk())))
+        ClosureThunk::new(Box::new(|| f(self.dethunk())))
     }
 
     pub fn set(&self, val: T) -> Result<(), T> {
@@ -99,19 +99,19 @@ impl<T, F: FnOnce() -> T> Thunk<T, F> {
     }
 }
 
-pub struct DepThunk<T, A> {
+pub struct Thunk<T, A> {
     inner: OnceCell<T>,
     #[allow(clippy::type_complexity)]
     init: Cell<Option<(fn(A) -> T, A)>>
 }
 
-impl<T, A> DepThunk<T, A> {
+impl<T, A> Thunk<T, A> {
     pub fn new(f: fn(A) -> T, a: A) -> Self {
         Self { inner: OnceCell::new(), init: Cell::new(Some((f, a))) }
     }
 
-    pub fn as_ref(&self) -> DepThunk<&T, &Self> {
-        DepThunk::new(|t| t.force(), self)
+    pub fn as_ref(&self) -> Thunk<&T, &Self> {
+        Thunk::new(|t| t.force(), self)
     }
 
     pub fn force(&self) -> &T {
@@ -127,8 +127,8 @@ impl<T, A> DepThunk<T, A> {
     }
 
     #[allow(clippy::type_complexity)]
-    pub fn map<U>(self, f: fn(T) -> U) -> DepThunk<U, (fn(T) -> U, Self)> {
-        DepThunk::new(|(f, t)| f(t.dethunk()), (f, self))
+    pub fn map<U>(self, f: fn(T) -> U) -> Thunk<U, (fn(T) -> U, Self)> {
+        Thunk::new(|(f, t)| f(t.dethunk()), (f, self))
     }
 
     pub fn set(&self, val: T) -> Result<(), T> {
@@ -145,18 +145,18 @@ impl<T, A> DepThunk<T, A> {
         self.inner.get().is_some()
     }
 }
-impl<T: Clone, A> DepThunk<T, A> {
-    pub fn cloned(&self) -> DepThunk<T, DepThunk<&T, &Self>> {
-        DepThunk::new(|t| t.dethunk().clone(), self.as_ref())
+impl<T: Clone, A> Thunk<T, A> {
+    pub fn cloned(&self) -> Thunk<T, Thunk<&T, &Self>> {
+        Thunk::new(|t| t.dethunk().clone(), self.as_ref())
     }
 }
-impl<T: Copy, A> DepThunk<T, A> {
-    pub fn copied(&self) -> DepThunk<T, DepThunk<&T, &Self>> {
-        DepThunk::new(|t| *t.dethunk(), self.as_ref())
+impl<T: Copy, A> Thunk<T, A> {
+    pub fn copied(&self) -> Thunk<T, Thunk<&T, &Self>> {
+        Thunk::new(|t| *t.dethunk(), self.as_ref())
     }
 }
 
-impl<T: Clone> Clone for Thunk<T> {
+impl<T: Clone> Clone for ClosureThunk<T> {
     fn clone(&self) -> Self {
         Self { 
             inner: OnceCell::clone(&self.inner),
@@ -164,7 +164,7 @@ impl<T: Clone> Clone for Thunk<T> {
         }
     }
 }
-impl<T: Clone, A: Clone> Clone for DepThunk<T, A> {
+impl<T: Clone, A: Clone> Clone for Thunk<T, A> {
     fn clone(&self) -> Self {
         Self { 
             inner: OnceCell::clone(&self.inner),
@@ -184,15 +184,15 @@ impl<T: Clone, A: Clone> Clone for DepThunk<T, A> {
 
 #[cfg(test)]
 mod tests {
-    use crate::{Thunk, Lazy, DepThunk};
+    use crate::{ClosureThunk, Lazy, Thunk};
 
     #[test]
     fn thunky() {
-        let x = Thunk::new(|| {
+        let x = ClosureThunk::new(|| {
             println!("initialized x");
             2u32
         });
-        let y = Thunk::new(|| {
+        let y = ClosureThunk::new(|| {
             println!("initialized y");
             3u32
         });
@@ -202,7 +202,7 @@ mod tests {
             y.as_ref().map(u32::clone), 
             x.as_ref().map(u32::clone)
         ];
-        let z: Thunk<Vec<_>, _> = Thunk::new(|| y.into_iter().map(Thunk::dethunk).collect());
+        let z: ClosureThunk<Vec<_>, _> = ClosureThunk::new(|| y.into_iter().map(ClosureThunk::dethunk).collect());
 
         let xy = x.as_ref().map(|t| t + 1);
         let _ = x.set(13);
@@ -213,17 +213,17 @@ mod tests {
     #[test]
     fn doubler() {
         fn and<'a>(left: &'a dyn Lazy<bool>, right: &'a dyn Lazy<bool>) -> impl Lazy<bool> + 'a {
-            DepThunk::new(|(l, r)| *l.resolve_ref() && *r.resolve_ref(), (left, right))
+            Thunk::new(|(l, r)| *l.resolve_ref() && *r.resolve_ref(), (left, right))
         }
 
-        let x: Thunk<bool> = Thunk::new(|| false);
-        let y = Thunk::undef();
-        let w: Box<dyn Lazy<bool>> = Box::new(DepThunk::new(|(x, y)| and(x, y), (&x, &y)).map(|t| !t.resolve_ref()));
+        let x: ClosureThunk<bool> = ClosureThunk::new(|| false);
+        let y = ClosureThunk::undef();
+        let w: Box<dyn Lazy<bool>> = Box::new(Thunk::new(|(x, y)| and(x, y), (&x, &y)).map(|t| !t.resolve_ref()));
         println!("{}", (*w).resolve_ref());
     }
     #[test]
     fn time_travel() {
-        let y = Thunk::<usize>::undef();
+        let y = ClosureThunk::<usize>::undef();
         let m = vec![1, 2, 4, 5, 9, 7, 4, 1, 2, 329, 23, 23, 21, 123, 123, 0, 324];
         let (m, it) = m.into_iter()
             .fold((vec![], 0), |(mut vec, r), t| {
@@ -232,7 +232,7 @@ mod tests {
             });
         y.set(it).ok().unwrap();
         let m: Vec<_> = m.into_iter()
-            .map(Thunk::force)
+            .map(ClosureThunk::force)
             .copied()
             .collect();
         println!("{m:?}");
