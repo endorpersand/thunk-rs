@@ -29,15 +29,15 @@ pub trait Thunkable {
     {
         Inspect(self, f)
     }
-    fn zip<B: Thunkable>(self, b: B) -> ZipMap<Self, B, ()>
+    fn zip<B: Thunkable>(self, b: B) -> ZipMap<(Self, B), ()>
         where Self: Sized
     {
         zip(self, b)
     }
-    fn zip_map<U, B: Thunkable, F: FnOnce(Self, B) -> U>(self, b: B, f: F) -> ZipMap<Self, B, F>
+    fn zip_map<U, B: Thunkable, F: FnOnce((Self, B)) -> U>(self, b: B, f: F) -> ZipMap<(Self, B), F>
         where Self: Sized
     {
-        ZipMap(self, b, f)
+        ZipMap((self, b), f)
     }
     fn boxed<'a>(self) -> ThunkBox<'a, Self::Item> 
         where Self: Sized + 'a
@@ -169,20 +169,64 @@ impl<F: Thunkable, I: FnOnce(&F::Item)> Thunkable for Inspect<F, I> {
     }
 }
 
-pub fn zip<A: Thunkable, B: Thunkable>(a: A, b: B) -> ZipMap<A, B, ()> {
-    ZipMap(a, b, ())
+pub trait TupleConcat {
+    type Out<T>;
+    fn concat<T>(self, t: T) -> Self::Out<T>;
 }
-pub struct ZipMap<A, B, F>(A, B, F);
-impl<A: Thunkable, B: Thunkable> ZipMap<A, B, ()> {
-    pub fn map<U, F: FnOnce(A, B) -> U>(self, f: F) -> ZipMap<A, B, F> {
-        ZipMap(self.0, self.1, f)
+
+impl TupleConcat for () {
+    type Out<T> = (T,);
+
+    fn concat<T>(self, t: T) -> Self::Out<T> {
+        (t,)
     }
 }
-impl<A: Thunkable, B: Thunkable, U, F: FnOnce(A, B) -> U> Thunkable for ZipMap<A, B, F> {
+macro_rules! tuple_concat_impl {
+    ($($i:ident: $e:tt),+) => {
+        impl<$($i),*> TupleConcat for ($($i),+,) {
+            type Out<T> = ($($i),+, T);
+
+            fn concat<T>(self, t: T) -> Self::Out<T> {
+                ($(self.$e),+, t)
+            }
+        }
+    }
+}
+
+tuple_concat_impl!{ T0: 0 }
+tuple_concat_impl!{ T0: 0, T1: 1 }
+tuple_concat_impl!{ T0: 0, T1: 1, T2: 2 }
+tuple_concat_impl!{ T0: 0, T1: 1, T2: 2, T3: 3 }
+tuple_concat_impl!{ T0: 0, T1: 1, T2: 2, T3: 3, T4: 4 }
+tuple_concat_impl!{ T0: 0, T1: 1, T2: 2, T3: 3, T4: 4, T5: 5 }
+tuple_concat_impl!{ T0: 0, T1: 1, T2: 2, T3: 3, T4: 4, T5: 5, T6: 6 }
+tuple_concat_impl!{ T0: 0, T1: 1, T2: 2, T3: 3, T4: 4, T5: 5, T6: 6, T7: 7 }
+tuple_concat_impl!{ T0: 0, T1: 1, T2: 2, T3: 3, T4: 4, T5: 5, T6: 6, T7: 7, T8: 8 }
+tuple_concat_impl!{ T0: 0, T1: 1, T2: 2, T3: 3, T4: 4, T5: 5, T6: 6, T7: 7, T8: 8, T9: 9 }
+tuple_concat_impl!{ T0: 0, T1: 1, T2: 2, T3: 3, T4: 4, T5: 5, T6: 6, T7: 7, T8: 8, T9: 9, T10: 10 }
+tuple_concat_impl!{ T0: 0, T1: 1, T2: 2, T3: 3, T4: 4, T5: 5, T6: 6, T7: 7, T8: 8, T9: 9, T10: 10, T11: 11 }
+tuple_concat_impl!{ T0: 0, T1: 1, T2: 2, T3: 3, T4: 4, T5: 5, T6: 6, T7: 7, T8: 8, T9: 9, T10: 10, T11: 11, T12: 12 }
+
+pub fn zip<A: Thunkable, B: Thunkable>(a: A, b: B) -> ZipMap<(A, B), ()> {
+    ZipMap((a, b), ())
+}
+pub struct ZipMap<T, F>(T, F);
+
+impl<T: TupleConcat> ZipMap<T, ()> {
+    pub fn zip<U: Thunkable>(self, u: U) -> ZipMap<T::Out<U>, ()> {
+        ZipMap(self.0.concat(u), ())
+    }
+}
+impl<T> ZipMap<T, ()> {
+    pub fn map<U, F: FnOnce(T) -> U>(self, f: F) -> ZipMap<T, F> {
+        ZipMap(self.0, f)
+    }
+}
+impl<T, U, F: FnOnce(T) -> U> Thunkable for ZipMap<T, F> {
     type Item = U;
 
     fn resolve(self) -> Self::Item {
-        self.2(self.0, self.1)
+        self.1(self.0)
     }
 }
 
@@ -470,7 +514,7 @@ mod tests {
         let x = Thunk::with(|| dbg!(false));
         let y = Thunk::undef();
         let w = (&x).zip(&y)
-            .map(|x, y| *x.resolve() && *y.resolve())
+            .map(|(x, y)| *x.resolve() && *y.resolve())
             .map(|t| !t);
         println!("{}", w.into_thunk().force());
     }
@@ -507,7 +551,8 @@ mod tests {
         let z = Thunk::with(|| dbg!(true));
         let w = Thunk::undef();
         let res = (&z).zip(&w)
-            .map(|l, r| *l.force() || *r.force())
+            .zip(&w)
+            .map(|(l, r, c)| *l.force() || *r.force() || *c.force())
             .inspect(|_| println!("loaded result"))
             .into_thunk();
         println!("{}", res.force());
