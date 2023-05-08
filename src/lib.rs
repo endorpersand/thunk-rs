@@ -39,6 +39,11 @@ pub trait Thunkable {
     {
         ZipMap(self, b, f)
     }
+    fn boxed<'a>(self) -> ThunkBox<'a, Self::Item> 
+        where Self: Sized + 'a
+    {
+        ThunkBox::new(self)
+    }
 }
 impl<T> Thunkable for fn() -> T {
     type Item = T;
@@ -55,6 +60,7 @@ impl<T: Thunkable, U: Thunkable> Thunkable for (T, U) {
     }
 }
 
+#[derive(Clone)]
 pub struct Thunk<F: Thunkable> {
     inner: ThunkInner<F::Item, F>
 }
@@ -180,6 +186,35 @@ impl<A: Thunkable, B: Thunkable, U, F: FnOnce(A, B) -> U> Thunkable for ZipMap<A
     }
 }
 
+/// Similar to Thunkable but using a &mut self binding.
+/// The ThunkDrop object should not be used afterwards (or else the object will panic).
+trait ThunkDrop {
+    type Item;
+    fn drop_resolve(&mut self) -> Self::Item;
+}
+pub struct ThunkBox<'a, T>(Box<dyn ThunkDrop<Item=T> + 'a>);
+
+impl<'a, T> ThunkBox<'a, T> {
+    fn new<F: Thunkable<Item=T> + 'a>(f: F) -> Self {
+        ThunkBox(Box::new(Some(f.into_thunk())))
+    }
+}
+impl<F: Thunkable> ThunkDrop for Option<Thunk<F>> {
+    type Item = F::Item;
+
+    fn drop_resolve(&mut self) -> Self::Item {
+        std::mem::take(self)
+            .expect("Thunk was already dropped")
+            .dethunk()
+    }
+}
+impl<'a, T> Thunkable for ThunkBox<'a, T> {
+    type Item = T;
+
+    fn resolve(mut self) -> Self::Item {
+        self.0.drop_resolve()
+    }
+}
 pub trait Lazy<T> {
     fn resolve_ref(&self) -> &T;
     fn resolve_mut(&mut self) -> &mut T;
@@ -398,31 +433,33 @@ macro_rules! thunk {
 
 #[cfg(test)]
 mod tests {
-    use crate::{Lazy, ArgThunk, Thunk, Thunkable};
+    use crate::{Thunk, Thunkable};
 
     #[test]
     fn thunky() {
-        let x = thunk!(|| {
+        let x = Thunk::with(|| {
             println!("initialized x");
             2u32
         });
-        let y = thunk!(|| {
+        let y = Thunk::with(|| {
             println!("initialized y");
             3u32
         });
         let y = vec![
-            x.as_ref().map(|t| t + 14).boxed(), 
-            x.cloned().boxed(), 
-            y.cloned().boxed(), 
-            x.cloned().boxed()
+            (&x).map(|t| t + 14).boxed(),
+            (&x).cloned().boxed(),
+            (&y).cloned().boxed(),
+            (&x).cloned().boxed(),
         ];
-        let z: ArgThunk<Vec<_>, _> = thunk!(|y| {
-            y.into_iter()
-                .map(|b| *(*b).resolve_ref())
-                .collect()
-        });
+        let z = Thunk::of(y)
+            .map(|y| {
+                y.into_iter()
+                    .map(|b| b.resolve())
+                    .collect::<Vec<_>>()
+            })
+            .into_thunk();
 
-        let xy = x.as_ref().map(|t| t + 1);
+        let xy = (&x).map(|t| t + 1).into_thunk();
         let _ = x.set(13);
         println!("{:?}", xy.force());
         println!("{:?}", z.force());
@@ -430,20 +467,16 @@ mod tests {
 
     #[test]
     fn doubler() {
-        fn and<'a>(left: &'a dyn Lazy<bool>, right: &'a dyn Lazy<bool>) -> impl Lazy<bool> + 'a {
-            thunk!(|(l = left, r = right)| *l.resolve_ref() && *r.resolve_ref())
-        }
-
-        let x = thunk!(|| false);
-        let y = ArgThunk::undef();
-        let w = thunk!(|(x = &x, y = &y)| and(x, y))
-            .map(|t| !t.resolve_ref())
-            .boxed();
-        println!("{}", (*w).resolve_ref());
+        let x = Thunk::with(|| dbg!(false));
+        let y = Thunk::undef();
+        let w = (&x).zip(&y)
+            .map(|x, y| *x.resolve() && *y.resolve())
+            .map(|t| !t);
+        println!("{}", w.into_thunk().force());
     }
     #[test]
     fn time_travel() {
-        let y: ArgThunk<usize, _> = ArgThunk::undef();
+        let y = Thunk::undef();
         let m = vec![1, 2, 4, 5, 9, 7, 4, 1, 2, 329, 23, 23, 21, 123, 123, 0, 324];
         let (m, it) = m.into_iter()
             .fold((vec![], 0), |(mut vec, r), t| {
@@ -452,7 +485,7 @@ mod tests {
             });
         y.set(it).ok().unwrap();
         let m: Vec<_> = m.into_iter()
-            .map(ArgThunk::force)
+            .map(Thunk::force)
             .copied()
             .collect();
         println!("{m:?}");
