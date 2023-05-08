@@ -275,25 +275,30 @@ impl<T, U, F: FnOnce(T) -> U> Thunkable for ZipMap<T, F> {
 }
 
 /// Similar to Thunkable but using a &mut self binding.
-/// The ThunkDrop object should not be used afterwards (or else the object will panic).
+/// The ThunkDrop object should not be used afterwards.
 trait ThunkDrop {
     type Item;
     fn drop_resolve(&mut self) -> Self::Item;
 }
+
+// This implementation is a hacky workaround.
+// This implementation obscures details about an inner Thunkable (similar to what Box<dyn Thunkable>) would do.
+// However, .resolve isn't callable on Box<dyn Thunkable>, so this is used to enable access to .resolve but with a &mut Self binding.
+// Basically, ThunkBox<T> should be used in place of Box<dyn Thunkable<Item=T>>.
 pub struct ThunkBox<'a, T>(Box<dyn ThunkDrop<Item=T> + 'a>);
 
 impl<'a, T> ThunkBox<'a, T> {
     fn new<F: Thunkable<Item=T> + 'a>(f: F) -> Self {
-        ThunkBox(Box::new(Some(f.into_thunk())))
+        ThunkBox(Box::new(Some(f)))
     }
 }
-impl<F: Thunkable> ThunkDrop for Option<Thunk<F>> {
+impl<F: Thunkable> ThunkDrop for Option<F> {
     type Item = F::Item;
 
     fn drop_resolve(&mut self) -> Self::Item {
-        std::mem::take(self)
-            .expect("Thunk was already dropped")
-            .dethunk()
+        self.take()
+            .expect("Thunkable was already dropped")
+            .resolve()
     }
 }
 impl<'a, T> Thunkable for ThunkBox<'a, T> {
