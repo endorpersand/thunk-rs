@@ -52,13 +52,6 @@ impl<T> Thunkable for fn() -> T {
         self()
     }
 }
-impl<T: Thunkable, U: Thunkable> Thunkable for (T, U) {
-    type Item = (T::Item, U::Item);
-
-    fn resolve(self) -> Self::Item {
-        (self.0.resolve(), self.1.resolve())
-    }
-}
 
 struct ThunkInner<T, F> {
     inner: OnceCell<T>,
@@ -276,6 +269,15 @@ impl<T, U, F: FnOnce(T) -> U> Thunkable for ZipMap<T, F> {
     }
 }
 
+pub struct Seq<A: Thunkable, B: Thunkable>(pub A, pub B);
+impl<A: Thunkable, B: Thunkable> Thunkable for Seq<A, B> {
+    type Item = (A::Item, B::Item);
+
+    fn resolve(self) -> Self::Item {
+        (self.0.resolve(), self.1.resolve())
+    }
+}
+
 /// Similar to Thunkable but using a &mut self binding.
 /// The ThunkDrop object should not be used afterwards.
 trait ThunkDrop {
@@ -378,7 +380,7 @@ mod tests {
         let y = Thunk::with(|| dbg!(3));
 
         println!("creating thunk sum");
-        let sum = (&x, &y)
+        let sum = crate::Seq(&x, &y)
             .map(|(x, y)| x + y)
             .inspect(|_| println!("loaded thunk sum"))
             .into_thunk();
