@@ -93,13 +93,15 @@ impl<T, F> ThunkInner<T, F> {
 
 impl<T: Clone, F: Clone> Clone for ThunkInner<T, F> {
     fn clone(&self) -> Self {
-        Self { inner: self.inner.clone(), init: match self.init.take() {
-            Some(t) => {
-                let tc = t.clone();
-                self.init.replace(Some(t));
-                Cell::new(Some(tc))
-            },
-            None => Cell::new(None),
+        Self { 
+            inner: self.inner.clone(), 
+            init: match self.init.take() {
+                Some(t) => {
+                    let tc = t.clone();
+                    self.init.replace(Some(t));
+                    Cell::new(Some(tc))
+                },
+                None => Cell::new(None),
         } }
     }
 }
@@ -237,19 +239,19 @@ macro_rules! tuple_concat_impl {
     }
 }
 
-tuple_concat_impl!{ T0: 0 }
-tuple_concat_impl!{ T0: 0, T1: 1 }
-tuple_concat_impl!{ T0: 0, T1: 1, T2: 2 }
-tuple_concat_impl!{ T0: 0, T1: 1, T2: 2, T3: 3 }
-tuple_concat_impl!{ T0: 0, T1: 1, T2: 2, T3: 3, T4: 4 }
-tuple_concat_impl!{ T0: 0, T1: 1, T2: 2, T3: 3, T4: 4, T5: 5 }
-tuple_concat_impl!{ T0: 0, T1: 1, T2: 2, T3: 3, T4: 4, T5: 5, T6: 6 }
-tuple_concat_impl!{ T0: 0, T1: 1, T2: 2, T3: 3, T4: 4, T5: 5, T6: 6, T7: 7 }
-tuple_concat_impl!{ T0: 0, T1: 1, T2: 2, T3: 3, T4: 4, T5: 5, T6: 6, T7: 7, T8: 8 }
-tuple_concat_impl!{ T0: 0, T1: 1, T2: 2, T3: 3, T4: 4, T5: 5, T6: 6, T7: 7, T8: 8, T9: 9 }
-tuple_concat_impl!{ T0: 0, T1: 1, T2: 2, T3: 3, T4: 4, T5: 5, T6: 6, T7: 7, T8: 8, T9: 9, T10: 10 }
-tuple_concat_impl!{ T0: 0, T1: 1, T2: 2, T3: 3, T4: 4, T5: 5, T6: 6, T7: 7, T8: 8, T9: 9, T10: 10, T11: 11 }
-tuple_concat_impl!{ T0: 0, T1: 1, T2: 2, T3: 3, T4: 4, T5: 5, T6: 6, T7: 7, T8: 8, T9: 9, T10: 10, T11: 11, T12: 12 }
+tuple_concat_impl! { T0: 0 }
+tuple_concat_impl! { T0: 0, T1: 1 }
+tuple_concat_impl! { T0: 0, T1: 1, T2: 2 }
+tuple_concat_impl! { T0: 0, T1: 1, T2: 2, T3: 3 }
+tuple_concat_impl! { T0: 0, T1: 1, T2: 2, T3: 3, T4: 4 }
+tuple_concat_impl! { T0: 0, T1: 1, T2: 2, T3: 3, T4: 4, T5: 5 }
+tuple_concat_impl! { T0: 0, T1: 1, T2: 2, T3: 3, T4: 4, T5: 5, T6: 6 }
+tuple_concat_impl! { T0: 0, T1: 1, T2: 2, T3: 3, T4: 4, T5: 5, T6: 6, T7: 7 }
+tuple_concat_impl! { T0: 0, T1: 1, T2: 2, T3: 3, T4: 4, T5: 5, T6: 6, T7: 7, T8: 8 }
+tuple_concat_impl! { T0: 0, T1: 1, T2: 2, T3: 3, T4: 4, T5: 5, T6: 6, T7: 7, T8: 8, T9: 9 }
+tuple_concat_impl! { T0: 0, T1: 1, T2: 2, T3: 3, T4: 4, T5: 5, T6: 6, T7: 7, T8: 8, T9: 9, T10: 10 }
+tuple_concat_impl! { T0: 0, T1: 1, T2: 2, T3: 3, T4: 4, T5: 5, T6: 6, T7: 7, T8: 8, T9: 9, T10: 10, T11: 11 }
+tuple_concat_impl! { T0: 0, T1: 1, T2: 2, T3: 3, T4: 4, T5: 5, T6: 6, T7: 7, T8: 8, T9: 9, T10: 10, T11: 11, T12: 12 }
 
 pub fn zip<A: Thunkable, B: Thunkable>(a: A, b: B) -> ZipMap<(A, B), ()> {
     ZipMap((a, b), ())
@@ -280,18 +282,6 @@ trait ThunkDrop {
     type Item;
     fn drop_resolve(&mut self) -> Self::Item;
 }
-
-// This implementation is a hacky workaround.
-// This implementation obscures details about an inner Thunkable (similar to what Box<dyn Thunkable>) would do.
-// However, .resolve isn't callable on Box<dyn Thunkable>, so this is used to enable access to .resolve but with a &mut Self binding.
-// Basically, ThunkBox<T> should be used in place of Box<dyn Thunkable<Item=T>>.
-pub struct ThunkBox<'a, T>(Box<dyn ThunkDrop<Item=T> + 'a>);
-
-impl<'a, T> ThunkBox<'a, T> {
-    fn new<F: Thunkable<Item=T> + 'a>(f: F) -> Self {
-        ThunkBox(Box::new(Some(f)))
-    }
-}
 impl<F: Thunkable> ThunkDrop for Option<F> {
     type Item = F::Item;
 
@@ -299,6 +289,19 @@ impl<F: Thunkable> ThunkDrop for Option<F> {
         self.take()
             .expect("Thunkable was already dropped")
             .resolve()
+    }
+}
+
+/// This struct should be used in situations where a `Box<dyn Thunkable>` is needed.
+/// Unlike `Box<dyn Thunkable>`, this struct allows [`Thunkable::resolve`] to be called.
+/// 
+/// This type still internally uses a `dyn Trait`, so the same warnings about `dyn Trait`
+/// apply when considering using this type.
+pub struct ThunkBox<'a, T>(Box<dyn ThunkDrop<Item=T> + 'a>);
+
+impl<'a, T> ThunkBox<'a, T> {
+    fn new<F: Thunkable<Item=T> + 'a>(f: F) -> Self {
+        ThunkBox(Box::new(Some(f)))
     }
 }
 impl<'a, T> Thunkable for ThunkBox<'a, T> {
