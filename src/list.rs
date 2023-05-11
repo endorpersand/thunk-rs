@@ -33,19 +33,19 @@ impl<T> ThunkList<T> {
         ThunkList { head: None }
     }
 
-    pub fn cons_thunk<F>(f: F, lst: &Self) -> ThunkList<T> 
+    pub fn cons<F>(f: F, lst: &Self) -> ThunkList<T> 
         where T: 'static,
               F: Thunkable<Item = T> + 'static
     {
-        lst.pushed_thunk(f)
+        lst.pushed(f)
     }
-    pub fn cons(t: T, lst: &Self) -> ThunkList<T>
+    pub fn cons_known(t: T, lst: &Self) -> ThunkList<T>
         where T: 'static
     {
-        lst.pushed(t)
+        lst.pushed_known(t)
     }
 
-    fn pushed_thunk<F>(&self, f: F) -> ThunkList<T> 
+    fn pushed<F>(&self, f: F) -> ThunkList<T> 
         where T: 'static,
               F: Thunkable<Item = T> + 'static
     {
@@ -62,10 +62,10 @@ impl<T> ThunkList<T> {
 
         ThunkList { head: Some(node) }
     }
-    fn pushed(&self, t: T) -> ThunkList<T> 
+    fn pushed_known(&self, t: T) -> ThunkList<T> 
         where T: 'static
     {
-        self.pushed_thunk(Thunk::of(t))
+        self.pushed(Thunk::of(t))
     }
 
     pub fn split_first(&self) -> Option<(Rc<ThunkAny<'static, T>>, ThunkList<T>)> {
@@ -80,10 +80,10 @@ impl<T> ThunkList<T> {
     pub fn iter(&self) -> Iter<T> {
         Iter(self.head.as_ref())
     }
-    pub fn get_thunk(&self, n: usize) -> Option<&ThunkAny<'static, T>> {
+    pub fn get(&self, n: usize) -> Option<&ThunkAny<'static, T>> {
         self.iter().nth(n)
     }
-    pub fn get(&self, n: usize) -> Option<&T> {
+    pub fn get_forced(&self, n: usize) -> Option<&T> {
         self.iter().nth(n).map(Thunk::force)
     }
     pub fn len(&self) -> usize {
