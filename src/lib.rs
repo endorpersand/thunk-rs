@@ -1,5 +1,6 @@
 pub mod tuple;
 pub mod transform;
+pub mod list;
 pub use transform::zip;
 
 use std::cell::{OnceCell, Cell};
@@ -43,7 +44,7 @@ pub trait Thunkable {
     {
         transform::ZipMap((self, b), f)
     }
-    fn boxed<'a>(self) -> ThunkBox<'a, Self::Item> 
+    fn into_box<'a>(self) -> ThunkBox<'a, Self::Item> 
         where Self: Sized + 'a
     {
         ThunkBox::new(self)
@@ -62,8 +63,14 @@ struct ThunkInner<T, F> {
     init: Cell<Option<F>>
 }
 impl<T, F> ThunkInner<T, F> {
-    fn new(f: F) -> Self {
+    fn uninitialized(f: F) -> Self {
         ThunkInner { inner: OnceCell::new(), init: Cell::new(Some(f)) }
+    }
+    fn initialized(t: T) -> Self {
+        let inner = OnceCell::new();
+        let _ = inner.set(t);
+
+        ThunkInner { inner, init: Cell::new(None) }
     }
 
     fn force(&self, r: impl FnOnce(F) -> T) -> &T {
@@ -73,6 +80,9 @@ impl<T, F> ThunkInner<T, F> {
         })
     }
 
+    fn get(&self) -> Option<&T> {
+        self.inner.get()
+    }
     fn get_mut(&mut self) -> Option<&mut T> {
         self.inner.get_mut()
     }
@@ -111,31 +121,30 @@ impl<T> Thunk<fn() -> T> {
     pub fn undef() -> Self {
         Thunk::with(|| panic!("undef"))
     }
-    pub fn of(t: T) -> Self {
-        let thunk = Thunk::undef();
-        thunk.set(t)
-            .ok()
-            .expect("Thunk::undef should have been uninitialized");
-        thunk
-    }
     pub fn with(f: fn() -> T) -> Self {
         Thunk::new(f)
     }
+    pub fn of(t: T) -> Self {
+        Thunk::known(t)
+    }
 }
 impl<F: Thunkable> Thunk<F> {
-    pub fn new(t: F) -> Self {
-        Thunk { inner: ThunkInner::new(t) }
+    pub fn new(f: F) -> Self {
+        Thunk { inner: ThunkInner::uninitialized(f) }
+    }
+    pub fn known(t: F::Item) -> Self {
+        Thunk { inner: ThunkInner::initialized(t) }
     }
     pub fn force(&self) -> &F::Item {
         self.inner.force(|f| f.resolve())
     }
     pub fn force_mut(&mut self) -> &mut F::Item {
         self.force();
-        self.inner.get_mut().expect("force should have succeeded")
+        self.try_get_mut().expect("force should have succeeded")
     }
     pub fn dethunk(self) -> F::Item {
         self.force();
-        self.inner.into_inner().expect("force should have succeeded")
+        self.try_into_inner().expect("force should have succeeded")
     }
 
     pub fn set(&self, val: F::Item) -> Result<(), F::Item> {
@@ -143,6 +152,31 @@ impl<F: Thunkable> Thunk<F> {
     }
     pub fn is_initialized(&self) -> bool {
         self.inner.is_initialized()
+    }
+    pub fn boxed<'a>(self) -> Thunk<ThunkBox<'a, F::Item>> 
+        where F: 'a
+    {
+        let internal = self.inner;
+        
+        let inner = ThunkInner {
+            inner: internal.inner,
+            init: Cell::new({
+                internal.init.into_inner()
+                    .map(Thunkable::into_box)
+            })
+        };
+        
+        Thunk { inner }
+    }
+
+    pub fn try_get(&self) -> Option<&F::Item> {
+        self.inner.get()
+    }
+    pub fn try_get_mut(&mut self) -> Option<&mut F::Item> {
+        self.inner.get_mut()
+    }
+    pub fn try_into_inner(self) -> Option<F::Item> {
+        self.inner.into_inner()
     }
 }
 impl<F: Thunkable> Thunkable for Thunk<F> {
@@ -219,10 +253,10 @@ mod tests {
             3u32
         });
         let y = vec![
-            (&x).map(|t| t + 14).boxed(),
-            (&x).cloned().boxed(),
-            (&y).cloned().boxed(),
-            (&x).cloned().boxed(),
+            (&x).map(|t| t + 14).into_box(),
+            (&x).cloned().into_box(),
+            (&y).cloned().into_box(),
+            (&x).cloned().into_box(),
         ];
         let z = Thunk::of(y)
             .map(|y| {
