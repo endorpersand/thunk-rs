@@ -153,7 +153,7 @@ impl<F: Thunkable> Thunk<F> {
     pub fn is_initialized(&self) -> bool {
         self.inner.is_initialized()
     }
-    pub fn boxed<'a>(self) -> Thunk<ThunkBox<'a, F::Item>> 
+    pub fn boxed<'a>(self) -> ThunkAny<'a, F::Item>
         where F: 'a
     {
         let internal = self.inner;
@@ -236,6 +236,8 @@ impl<'a, T> Thunkable for ThunkBox<'a, T> {
         self.0.drop_resolve()
     }
 }
+
+pub type ThunkAny<'a, T> = Thunk<ThunkBox<'a, T>>;
 
 #[cfg(test)]
 mod tests {

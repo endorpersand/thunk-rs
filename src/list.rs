@@ -1,6 +1,6 @@
 use std::rc::Rc;
 
-use crate::{Thunk, ThunkBox, Thunkable};
+use crate::{Thunk, Thunkable, ThunkAny};
 
 pub struct ThunkList<T> {
     head: Option<Node<T>>
@@ -45,7 +45,7 @@ impl<T> ThunkList<T> {
         self.pushed_thunk(Thunk::of(t))
     }
 
-    pub fn split(&self) -> Option<(Rc<Thunk<ThunkBox<'static, T>>>, ThunkList<T>)> {
+    pub fn split(&self) -> Option<(Rc<ThunkAny<'static, T>>, ThunkList<T>)> {
         let Node { val, next } = self.head.as_ref()?;
         
         let head = next.as_deref()
@@ -62,8 +62,8 @@ impl<T> Default for ThunkList<T> {
     }
 }
 struct Node<T> {
-    val: Rc<Thunk<ThunkBox<'static, T>>>,
-    next: Option<Rc<Thunk<ThunkBox<'static, Node<T>>>>>
+    val: Rc<ThunkAny<'static, T>>,
+    next: Option<Rc<ThunkAny<'static, Node<T>>>>
 }
 
 impl<T> Drop for Node<T> {
