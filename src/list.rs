@@ -111,3 +111,21 @@ impl<'a, T> Iterator for Iter<'a, T> {
         Some(val)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use crate::Thunk;
+
+    use super::ThunkList;
+
+    #[test]
+    fn conner() {
+        let t = ThunkList::new();
+        let u = ThunkList::cons_known(2usize, &ThunkList::cons_known(1usize, &t));
+        let mut ui = u.iter();
+
+        println!("{:?}", ui.next().map(Thunk::force));
+        println!("{:?}", ui.next().map(Thunk::force));
+        println!("{:?}", ui.next().map(Thunk::force));
+    }
+}
