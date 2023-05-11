@@ -1,43 +1,47 @@
+pub mod tuple;
+pub mod transform;
+pub use transform::zip;
+
 use std::cell::{OnceCell, Cell};
 
 pub trait Thunkable {
     type Item;
 
     fn resolve(self) -> Self::Item;
-    fn map<U, F: FnOnce(Self::Item) -> U>(self, f: F) -> Map<Self, F> 
+    fn map<U, F: FnOnce(Self::Item) -> U>(self, f: F) -> transform::Map<Self, F> 
         where Self: Sized
     {
-        Map(self, f)
+        transform::Map(self, f)
     }
     fn into_thunk(self) -> Thunk<Self> 
         where Self: Sized
     {
         Thunk::new(self)
     }
-    fn cloned<'a, T: 'a + Clone>(self) -> Cloned<Self>
+    fn cloned<'a, T: 'a + Clone>(self) -> transform::Cloned<Self>
         where Self: Sized + Thunkable<Item=&'a T>,
     {
-        Cloned(self)
+        transform::Cloned(self)
     }
-    fn copied<'a, T: 'a + Copy>(self) -> Copied<Self>
+    fn copied<'a, T: 'a + Copy>(self) -> transform::Copied<Self>
         where Self: Sized + Thunkable<Item=&'a T>,
     {
-        Copied(self)
+        transform::Copied(self)
     }
-    fn inspect<I: FnOnce(&Self::Item)>(self, f: I) -> Inspect<Self, I>
+    fn inspect<I: FnOnce(&Self::Item)>(self, f: I) -> transform::Inspect<Self, I>
         where Self: Sized
     {
-        Inspect(self, f)
+        transform::Inspect(self, f)
     }
-    fn zip<B: Thunkable>(self, b: B) -> ZipMap<(Self, B), ()>
+    fn zip<B: Thunkable>(self, b: B) -> transform::ZipMap<(Self, B), ()>
         where Self: Sized
     {
         zip(self, b)
     }
-    fn zip_map<U, B: Thunkable, F: FnOnce((Self, B)) -> U>(self, b: B, f: F) -> ZipMap<(Self, B), F>
+    fn zip_map<U, B: Thunkable, F: FnOnce((Self, B)) -> U>(self, b: B, f: F) -> transform::ZipMap<(Self, B), F>
         where Self: Sized
     {
-        ZipMap((self, b), f)
+        transform::ZipMap((self, b), f)
     }
     fn boxed<'a>(self) -> ThunkBox<'a, Self::Item> 
         where Self: Sized + 'a
@@ -163,121 +167,6 @@ impl<'a, F: Thunkable> Thunkable for &'a mut Thunk<F> {
     }
 }
 
-pub struct AsRef<'a, F: Thunkable>(&'a Thunk<F>);
-impl<'a, F: Thunkable> Thunkable for AsRef<'a, F> {
-    type Item = &'a F::Item;
-
-    fn resolve(self) -> Self::Item {
-        self.0.force()
-    }
-}
-pub struct Map<F, M>(F, M);
-impl<U, F: Thunkable, M: FnOnce(F::Item) -> U> Thunkable for Map<F, M> {
-    type Item = U;
-
-    fn resolve(self) -> Self::Item {
-        self.1(self.0.resolve())
-    }
-}
-
-pub struct Cloned<F>(F);
-impl<'a, T: 'a + Clone, F: Thunkable<Item=&'a T>> Thunkable for Cloned<F> {
-    type Item = T;
-
-    fn resolve(self) -> Self::Item {
-        self.0.resolve().clone()
-    }
-}
-pub struct Copied<F>(F);
-impl<'a, T: 'a + Copy, F: Thunkable<Item=&'a T>> Thunkable for Copied<F> {
-    type Item = T;
-
-    fn resolve(self) -> Self::Item {
-        *self.0.resolve()
-    }
-}
-
-pub struct Inspect<F, I>(F, I);
-impl<F: Thunkable, I: FnOnce(&F::Item)> Thunkable for Inspect<F, I> {
-    type Item = F::Item;
-
-    fn resolve(self) -> Self::Item {
-        let t = self.0.resolve();
-        self.1(&t);
-        t
-    }
-}
-
-pub trait TupleConcat {
-    type Out<T>;
-    fn concat<T>(self, t: T) -> Self::Out<T>;
-}
-
-impl TupleConcat for () {
-    type Out<T> = (T,);
-
-    fn concat<T>(self, t: T) -> Self::Out<T> {
-        (t,)
-    }
-}
-macro_rules! tuple_concat_impl {
-    ($($i:ident: $e:tt),+) => {
-        impl<$($i),*> TupleConcat for ($($i),+,) {
-            type Out<T> = ($($i),+, T);
-
-            fn concat<T>(self, t: T) -> Self::Out<T> {
-                ($(self.$e),+, t)
-            }
-        }
-    }
-}
-
-tuple_concat_impl! { T0: 0 }
-tuple_concat_impl! { T0: 0, T1: 1 }
-tuple_concat_impl! { T0: 0, T1: 1, T2: 2 }
-tuple_concat_impl! { T0: 0, T1: 1, T2: 2, T3: 3 }
-tuple_concat_impl! { T0: 0, T1: 1, T2: 2, T3: 3, T4: 4 }
-tuple_concat_impl! { T0: 0, T1: 1, T2: 2, T3: 3, T4: 4, T5: 5 }
-tuple_concat_impl! { T0: 0, T1: 1, T2: 2, T3: 3, T4: 4, T5: 5, T6: 6 }
-tuple_concat_impl! { T0: 0, T1: 1, T2: 2, T3: 3, T4: 4, T5: 5, T6: 6, T7: 7 }
-tuple_concat_impl! { T0: 0, T1: 1, T2: 2, T3: 3, T4: 4, T5: 5, T6: 6, T7: 7, T8: 8 }
-tuple_concat_impl! { T0: 0, T1: 1, T2: 2, T3: 3, T4: 4, T5: 5, T6: 6, T7: 7, T8: 8, T9: 9 }
-tuple_concat_impl! { T0: 0, T1: 1, T2: 2, T3: 3, T4: 4, T5: 5, T6: 6, T7: 7, T8: 8, T9: 9, T10: 10 }
-tuple_concat_impl! { T0: 0, T1: 1, T2: 2, T3: 3, T4: 4, T5: 5, T6: 6, T7: 7, T8: 8, T9: 9, T10: 10, T11: 11 }
-tuple_concat_impl! { T0: 0, T1: 1, T2: 2, T3: 3, T4: 4, T5: 5, T6: 6, T7: 7, T8: 8, T9: 9, T10: 10, T11: 11, T12: 12 }
-
-pub fn zip<A: Thunkable, B: Thunkable>(a: A, b: B) -> ZipMap<(A, B), ()> {
-    ZipMap((a, b), ())
-}
-pub struct ZipMap<T, F>(T, F);
-
-impl<T: TupleConcat> ZipMap<T, ()> {
-    pub fn zip<U: Thunkable>(self, u: U) -> ZipMap<T::Out<U>, ()> {
-        ZipMap(self.0.concat(u), ())
-    }
-}
-impl<T> ZipMap<T, ()> {
-    pub fn map<U, F: FnOnce(T) -> U>(self, f: F) -> ZipMap<T, F> {
-        ZipMap(self.0, f)
-    }
-}
-impl<T, U, F: FnOnce(T) -> U> Thunkable for ZipMap<T, F> {
-    type Item = U;
-
-    fn resolve(self) -> Self::Item {
-        self.1(self.0)
-    }
-}
-
-pub struct Seq<A: Thunkable, B: Thunkable>(pub A, pub B);
-impl<A: Thunkable, B: Thunkable> Thunkable for Seq<A, B> {
-    type Item = (A::Item, B::Item);
-
-    fn resolve(self) -> Self::Item {
-        (self.0.resolve(), self.1.resolve())
-    }
-}
-
 /// Similar to Thunkable but using a &mut self binding.
 /// The ThunkDrop object should not be used afterwards.
 trait ThunkDrop {
@@ -316,6 +205,7 @@ impl<'a, T> Thunkable for ThunkBox<'a, T> {
 
 #[cfg(test)]
 mod tests {
+    use crate::transform::Seq;
     use crate::{Thunk, Thunkable};
 
     #[test]
@@ -380,7 +270,7 @@ mod tests {
         let y = Thunk::with(|| dbg!(3));
 
         println!("creating thunk sum");
-        let sum = crate::Seq(&x, &y)
+        let sum = Seq(&x, &y)
             .map(|(x, y)| x + y)
             .inspect(|_| println!("loaded thunk sum"))
             .into_thunk();
