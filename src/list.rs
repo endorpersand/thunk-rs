@@ -22,7 +22,7 @@ impl<T> ThunkList<T> {
         lst.pushed(t)
     }
 
-    pub fn pushed_thunk<F>(&self, f: F) -> ThunkList<T> 
+    fn pushed_thunk<F>(&self, f: F) -> ThunkList<T> 
         where T: 'static,
               F: Thunkable<Item = T> + 'static
     {
@@ -39,7 +39,7 @@ impl<T> ThunkList<T> {
 
         ThunkList { head: Some(node) }
     }
-    pub fn pushed(&self, t: T) -> ThunkList<T> 
+    fn pushed(&self, t: T) -> ThunkList<T> 
         where T: 'static
     {
         self.pushed_thunk(Thunk::of(t))
