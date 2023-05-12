@@ -7,6 +7,15 @@ struct Node<T> {
     next: Option<Rc<ThunkAny<'static, Node<T>>>>
 }
 
+/// Checks if the given `Rc<T>` points to an *isolated* reference cycle of `Rc<T>`'s
+/// (i.e., no other `Rc<T>` directly points into this reference cycle).
+/// The `f` parameter details how to get from one `Rc<T>` to another.
+/// 
+/// If this function does find a isolated cycle, it clones a `Rc<T>` in the cycle 
+/// (since this is the only `Rc<T>` pointing into the cycle, this is ensured to have 2 strong refs,
+/// and every other `Rc<T>` in the cycle should only have one).
+/// 
+/// Otherwise, it will return None.
 fn find_isolated_cycle<T>(start: Rc<T>, mut f: impl FnMut(&T) -> Option<&Rc<T>>) -> Option<Rc<T>> {
     let mut ef = |t| {
         f(t).filter(|rc| {
@@ -32,23 +41,31 @@ fn find_isolated_cycle<T>(start: Rc<T>, mut f: impl FnMut(&T) -> Option<&Rc<T>>)
 
 impl<T> Drop for Node<T> {
     fn drop(&mut self) {
+        // Repeatedly pop nodes until we hit shared nodes, a cycle, or nothing.
         let mut head = self.next.take();
         while let Some(rc) = head.take() {
             let weak = Rc::downgrade(&rc);
-
+            
             if let Some(thunk) = Rc::into_inner(rc) {
+                // This data is owned only by us, so we can destroy it however we like.
                 if let Some(mut inner) = thunk.try_into_inner() {
                     head = inner.next.take();
                 }
             } else if let Some(rc) = weak.upgrade() {
-                if let Some(iso_start) = find_isolated_cycle(rc, |t| t.try_get().and_then(|n| n.next.as_ref())) {
+                // This data either is in a cycle or shared among linked lists.
+                if let Some(start) = find_isolated_cycle(rc, |t| t.try_get().and_then(|n| n.next.as_ref())) {
+                    // If this data is in a cycle, use `start` to enter cycle and cut the cycle.
                     unsafe {
-                        let ptr = Rc::into_raw(iso_start).cast_mut();
-                        // SAFETY: Rc came from into_raw and there has to be 2 references into it
+                        let ptr = Rc::into_raw(start).cast_mut();
+                        // We do not intend to reuse start ptr, so treat it as destroyed.
+                        // SAFETY: 
+                        // 1. `ptr` is from Rc::into_raw
+                        // 2. the associated Rc came from find_isolated_cycle, 
+                        //    which dictates the returned Rc has 2 strong references.
                         Rc::decrement_strong_count(ptr);
 
                         // access an inner Rc and drop something:
-                        head = (*ptr).try_get_mut() // Rc being deref'd known to have 1 ref
+                        head = (*ptr).try_get_mut() // The deref'd ptr known to have 1 ref
                             .unwrap_unchecked() // known to be Some by cycle check
                             .next
                             .take();
