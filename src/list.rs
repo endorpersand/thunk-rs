@@ -44,33 +44,34 @@ impl<T> Drop for Node<T> {
         // Repeatedly pop nodes until we hit shared nodes, a cycle, or nothing.
         let mut head = self.next.take();
         while let Some(rc) = head.take() {
-            let weak = Rc::downgrade(&rc);
-            
-            if let Some(thunk) = Rc::into_inner(rc) {
-                // This data is owned only by us, so we can destroy it however we like.
-                if let Some(mut inner) = thunk.try_into_inner() {
-                    head = inner.next.take();
-                }
-            } else if let Some(rc) = weak.upgrade() {
-                // This data either is in a cycle or shared among linked lists.
-                if let Some(start) = find_isolated_cycle(rc, |t| t.try_get().and_then(|n| n.next.as_ref())) {
-                    // If this data is in a cycle, use `start` to enter cycle and cut the cycle.
-                    unsafe {
-                        let ptr = Rc::into_raw(start).cast_mut();
-                        // We do not intend to reuse start ptr, so treat it as destroyed.
-                        // SAFETY: 
-                        // 1. `ptr` is from Rc::into_raw
-                        // 2. the associated Rc came from find_isolated_cycle, 
-                        //    which dictates the returned Rc has 2 strong references.
-                        Rc::decrement_strong_count(ptr);
-
-                        // access an inner Rc and drop something:
-                        head = (*ptr).try_get_mut() // The deref'd ptr known to have 1 ref
-                            .unwrap_unchecked() // known to be Some by cycle check
-                            .next
-                            .take();
+            match Rc::try_unwrap(rc) {
+                Ok(thunk) => {
+                    // This data is owned only by us, so we can destroy it however we like.
+                    if let Some(mut inner) = thunk.try_into_inner() {
+                        head = inner.next.take();
                     }
-                }
+                },
+                Err(rc) => {
+                    // This data either is in a cycle or shared among linked lists.
+                    if let Some(start) = find_isolated_cycle(rc, |t| t.try_get().and_then(|n| n.next.as_ref())) {
+                        // If this data is in a cycle, use `start` to enter cycle and cut the cycle.
+                        unsafe {
+                            let ptr = Rc::into_raw(start).cast_mut();
+                            // We do not intend to reuse start ptr, so treat it as destroyed.
+                            // SAFETY: 
+                            // 1. `ptr` is from Rc::into_raw
+                            // 2. the associated Rc came from find_isolated_cycle, 
+                            //    which dictates the returned Rc has 2 strong references.
+                            Rc::decrement_strong_count(ptr);
+        
+                            // access an inner Rc and drop something:
+                            head = (*ptr).try_get_mut() // The deref'd ptr known to have 1 ref
+                                .unwrap_unchecked() // known to be Some by cycle check
+                                .next
+                                .take();
+                        }
+                    }
+                },
             }
         }
     }
