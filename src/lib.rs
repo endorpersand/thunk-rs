@@ -235,6 +235,10 @@ impl<'a, T> Thunkable for ThunkBox<'a, T> {
     fn resolve(mut self) -> Self::Item {
         self.0.drop_resolve()
     }
+    fn into_box<'b>(self) -> ThunkBox<'b, Self::Item> 
+            where Self: 'b {
+        self
+    }
 }
 
 pub type ThunkAny<'a, T> = Thunk<ThunkBox<'a, T>>;
