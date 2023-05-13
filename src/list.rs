@@ -2,11 +2,11 @@ use std::rc::Rc;
 
 use crate::{Thunk, Thunkable, ThunkAny};
 
-struct Node<T> {
-    val: Rc<ThunkAny<'static, T>>,
+struct Node<'a, T> {
+    val: Rc<ThunkAny<'a, T>>,
 
     // This outer Option should only be None once Node is in state to drop.
-    next: Option<Rc<ThunkAny<'static, Option<Node<T>>>>>
+    next: Option<Rc<ThunkAny<'a, Option<Node<'a, T>>>>>
 }
 
 /// Checks if the given `Rc<T>` points to an *isolated* reference cycle of `Rc<T>`'s
@@ -41,15 +41,15 @@ fn find_isolated_cycle<T>(start: Rc<T>, mut f: impl FnMut(&T) -> Option<&Rc<T>>)
     Some(tort).cloned()
 }
 
-impl<T> Node<T> {
-    fn new(val: ThunkAny<'static, T>, next: Rc<ThunkAny<'static, Option<Node<T>>>>) -> Node<T> {
+impl<'a, T> Node<'a, T> {
+    fn new(val: ThunkAny<'a, T>, next: Rc<ThunkAny<'a, Option<Node<'a, T>>>>) -> Node<'a, T> {
         Node {
             val: Rc::new(val),
             next: Some(next),
         }
     }
 }
-impl<T> Drop for Node<T> {
+impl<T> Drop for Node<'_, T> {
     fn drop(&mut self) {
         // Repeatedly pop nodes until we hit shared nodes, a cycle, or nothing.
         let mut head = self.next.take();
@@ -97,34 +97,34 @@ impl<T> Drop for Node<T> {
         }
     }
 }
-impl<T> Clone for Node<T> {
+impl<T> Clone for Node<'_, T> {
     fn clone(&self) -> Self {
         Self { val: self.val.clone(), next: self.next.clone() }
     }
 }
 
-pub struct ThunkList<T> {
-    head: Option<Node<T>>
+pub struct ThunkList<'a, T> {
+    head: Option<Node<'a, T>>
 }
-impl<T> ThunkList<T> {
+impl<'a, T> ThunkList<'a, T> {
     pub fn new() -> Self {
         ThunkList { head: None }
     }
 
-    pub fn cons<F>(f: F, lst: &Self) -> ThunkList<T> 
-        where T: 'static,
-              F: Thunkable<Item = T> + 'static
+    pub fn cons<F>(f: F, lst: &Self) -> ThunkList<'a, T> 
+        where T: 'a,
+              F: Thunkable<Item = T> + 'a
     {
         lst.pushed(f)
     }
-    pub fn cons_known(t: T, lst: &Self) -> ThunkList<T>
-        where T: 'static
+    pub fn cons_known(t: T, lst: &Self) -> ThunkList<'a, T>
+        where T: 'a
     {
         lst.pushed_known(t)
     }
-    pub fn cons_cyclic<F>(f: F) -> ThunkList<T> 
-        where T: 'static,
-              F: Thunkable<Item = T> + 'static
+    pub fn cons_cyclic<F>(f: F) -> ThunkList<'a, T> 
+        where T: 'a,
+              F: Thunkable<Item = T> + 'a
     {
         let next = Rc::new(Thunk::undef().boxed());
         let node = Node::new(
@@ -139,9 +139,9 @@ impl<T> ThunkList<T> {
         ThunkList { head: Some(node) }
     }
 
-    fn pushed<F>(&self, f: F) -> ThunkList<T> 
-        where T: 'static,
-              F: Thunkable<Item = T> + 'static
+    fn pushed<F>(&self, f: F) -> ThunkList<'a, T> 
+        where T: 'a,
+              F: Thunkable<Item = T> + 'a
     {
         let next = Rc::new(
             Thunk::of(self.head.clone()).boxed()
@@ -153,13 +153,13 @@ impl<T> ThunkList<T> {
 
         ThunkList { head: Some(node) }
     }
-    fn pushed_known(&self, t: T) -> ThunkList<T> 
-        where T: 'static
+    fn pushed_known(&self, t: T) -> ThunkList<'a, T> 
+        where T: 'a
     {
         self.pushed(Thunk::of(t))
     }
 
-    pub fn split_first(&self) -> Option<(Rc<ThunkAny<'static, T>>, ThunkList<T>)> {
+    pub fn split_first(&self) -> Option<(Rc<ThunkAny<'a, T>>, ThunkList<'a, T>)> {
         let Node { val, next } = self.head.as_ref()?;
         
         let head = next.as_deref()
@@ -168,10 +168,10 @@ impl<T> ThunkList<T> {
 
         Some((Rc::clone(val), ThunkList { head }))
     }
-    pub fn iter(&self) -> Iter<T> {
+    pub fn iter(&self) -> Iter<'a, '_, T> {
         Iter(self.head.as_ref())
     }
-    pub fn get(&self, n: usize) -> Option<&ThunkAny<'static, T>> {
+    pub fn get(&self, n: usize) -> Option<&ThunkAny<'a, T>> {
         self.iter().nth(n)
     }
     pub fn get_forced(&self, n: usize) -> Option<&T> {
@@ -185,14 +185,14 @@ impl<T> ThunkList<T> {
     }
 }
 
-impl<T> Default for ThunkList<T> {
+impl<T> Default for ThunkList<'_, T> {
     fn default() -> Self {
         Self::new()
     }
 }
-pub struct Iter<'a, T>(Option<&'a Node<T>>);
-impl<'a, T> Iterator for Iter<'a, T> {
-    type Item = &'a ThunkAny<'static, T>;
+pub struct Iter<'a, 'b, T>(Option<&'b Node<'a, T>>);
+impl<'a, 'b, T> Iterator for Iter<'a, 'b, T> {
+    type Item = &'b ThunkAny<'a, T>;
 
     fn next(&mut self) -> Option<Self::Item> {
         let node = self.0?;
