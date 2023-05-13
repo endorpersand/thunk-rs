@@ -129,6 +129,14 @@ impl<T: Clone, F: Clone> Clone for ThunkInner<T, F> {
         } }
     }
 }
+impl<T: std::fmt::Debug, F> std::fmt::Debug for ThunkInner<T, F> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ThunkInner")
+            .field("inner", &self.inner)
+            .field("init", &"..")
+            .finish()
+    }
+}
 
 #[derive(Clone)]
 pub struct Thunk<F: Thunkable> {
@@ -205,6 +213,16 @@ impl<'a, F: Thunkable> Thunkable for &'a mut Thunk<F> {
 
     fn resolve(self) -> Self::Item {
         self.force_mut()
+    }
+}
+impl<F: Thunkable> std::fmt::Debug for Thunk<F> 
+    where F::Item: std::fmt::Debug
+{
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Thunk")
+            .field("inner", &self.inner.inner)
+            .field("init", &"..")
+            .finish()
     }
 }
 
