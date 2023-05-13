@@ -9,15 +9,26 @@ pub trait Thunkable {
     type Item;
 
     fn resolve(self) -> Self::Item;
+    fn into_thunk(self) -> Thunk<Self> 
+        where Self: Sized
+    {
+        Thunk::new(self)
+    }
     fn map<U, F: FnOnce(Self::Item) -> U>(self, f: F) -> transform::Map<Self, F> 
         where Self: Sized
     {
         transform::Map(self, f)
     }
-    fn into_thunk(self) -> Thunk<Self> 
+    fn and_then<U: Thunkable, F: FnOnce(Self::Item) -> U>(self, f: F) -> transform::AndThen<Self, F> 
         where Self: Sized
     {
-        Thunk::new(self)
+        transform::AndThen(self, f)
+    }
+    fn flatten(self) -> transform::Flatten<Self> 
+        where Self: Sized,
+              Self::Item: Thunkable
+    {
+        transform::Flatten(self)
     }
     fn cloned<'a, T: 'a + Clone>(self) -> transform::Cloned<Self>
         where Self: Sized + Thunkable<Item=&'a T>,

@@ -17,7 +17,22 @@ impl<U, F: Thunkable, M: FnOnce(F::Item) -> U> Thunkable for Map<F, M> {
         self.1(self.0.resolve())
     }
 }
+pub struct AndThen<F, M>(pub(crate) F, pub(crate) M);
+impl<U: Thunkable, F: Thunkable, M: FnOnce(F::Item) -> U> Thunkable for AndThen<F, M> {
+    type Item = U::Item;
 
+    fn resolve(self) -> Self::Item {
+        self.1(self.0.resolve()).resolve()
+    }
+}
+pub struct Flatten<F>(pub(crate) F);
+impl<U: Thunkable, F: Thunkable<Item = U>> Thunkable for Flatten<F> {
+    type Item = U::Item;
+
+    fn resolve(self) -> Self::Item {
+        self.0.resolve().resolve()
+    }
+}
 pub struct Cloned<F>(pub(crate) F);
 impl<'a, T: 'a + Clone, F: Thunkable<Item=&'a T>> Thunkable for Cloned<F> {
     type Item = T;
