@@ -144,7 +144,7 @@ impl<'a, T> ThunkList<'a, T> {
               F: Thunkable<Item = T> + 'a
     {
         let next = Rc::new(
-            Thunk::of(self.head.clone()).boxed()
+            Thunk::known(self.head.clone())
         );
         let node = Node::new(
             f.into_thunk().boxed(),
@@ -183,6 +183,21 @@ impl<'a, T> ThunkList<'a, T> {
     pub fn is_empty(&self) -> bool {
         self.head.is_none()
     }
+    pub fn iterate(f: impl FnMut() -> T + 'a) -> ThunkList<'a, T> 
+        where T: 'a
+    {
+        fn iterate_node<'a, T: 'a>(f: impl FnMut() -> T + 'a) -> ThunkAny<'a, Option<Node<'a, T>>> {
+            Thunk::of(f)
+                .map(|mut f| Node::new(Thunk::known(f()), Rc::new(iterate_node(f))))
+                .map(Some)
+                .into_thunk()
+                .boxed()
+        }
+
+        ThunkList {
+            head: iterate_node(f).dethunk()
+        }
+    }
 }
 
 impl<T> Default for ThunkList<'_, T> {
@@ -214,6 +229,20 @@ mod tests {
 
     use super::ThunkList;
 
+    fn take_n<'a, T>(t: &'a ThunkList<T>, n: usize) -> Vec<&'a T> {
+        t.iter()
+            .take(n)
+            .map(Thunk::force)
+            .collect()
+    }
+    fn take_nc<T: Clone>(t: &ThunkList<T>, n: usize) -> Vec<T> {
+        t.iter()
+            .take(n)
+            .map(Thunk::force)
+            .cloned()
+            .collect()
+    }
+
     #[test]
     fn conner() {
         let t = ThunkList::new();
@@ -241,5 +270,18 @@ mod tests {
 
         std::mem::drop(lst);
         assert!(ptr.upgrade().is_none(), "rc still exists, strong count: {}", ptr.strong_count() - 1);
+    }
+
+    #[test]
+    fn iterate() {
+        let mut ctr = 0usize;
+        {
+            let lst = ThunkList::iterate(|| {ctr += 1; dbg!(ctr)});
+            println!("{:?}", take_nc(&lst, 1));
+            println!("{:?}", take_nc(&lst, 5));
+            println!("{:?}", take_nc(&lst, 10));
+        }
+        ctr += 1;
+        println!("{ctr}");
     }
 }
