@@ -122,7 +122,7 @@ impl<'a, T> ThunkList<'a, T> {
     pub fn cons_known(t: T, lst: &Self) -> ThunkList<'a, T>
         where T: 'a
     {
-        lst.pushed_known(t)
+        lst.pushed(Thunk::of(t))
     }
     pub fn cons_cyclic<F>(f: F) -> ThunkList<'a, T> 
         where T: 'a,
@@ -151,11 +151,6 @@ impl<'a, T> ThunkList<'a, T> {
         );
 
         ThunkList::from(Thunk::known(Some(node)))
-    }
-    fn pushed_known(&self, t: T) -> ThunkList<'a, T> 
-        where T: 'a
-    {
-        self.pushed(Thunk::of(t))
     }
 
     pub fn split_first(&self) -> Option<(Rc<ThunkAny<'a, T>>, ThunkList<'a, T>)> {

@@ -175,10 +175,14 @@ impl<F: Thunkable> Thunk<F> {
     pub fn is_initialized(&self) -> bool {
         self.inner.is_initialized()
     }
+
+    fn map_init<G: Thunkable<Item=F::Item>>(self, f: impl FnOnce(F) -> G) -> Thunk<G> {
+        Thunk { inner: self.inner.map(f) }
+    }
     pub fn boxed<'a>(self) -> ThunkAny<'a, F::Item>
         where F: 'a
     {
-        Thunk { inner: self.inner.map(Thunkable::into_box) }
+        self.map_init(Thunkable::into_box)
     }
 
     pub fn try_get(&self) -> Option<&F::Item> {
