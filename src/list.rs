@@ -13,6 +13,21 @@ struct Node<'a, T> {
     next: Mzrc<MaybeNode<'a, T>>
 }
 
+impl<'a, T> Node<'a, T> {
+    fn new(val: ThunkAny<'a, T>, next: Rc<ThunkAny<'a, Option<Node<'a, T>>>>) -> Node<'a, T> {
+        Node {
+            val: Rc::new(val),
+            next: Some(next),
+        }
+    }
+}
+
+impl<T> Clone for Node<'_, T> {
+    fn clone(&self) -> Self {
+        Self { val: Rc::clone(&self.val), next: self.next.clone() }
+    }
+}
+
 /// Checks if the given `Rc<T>` points to an *isolated* reference cycle of `Rc<T>`s
 /// (i.e., no other `Rc<T>` directly points into this reference cycle).
 /// The `f` callback indicates how to access the next `Rc<T>` in the sequence.
@@ -78,22 +93,9 @@ fn drop_maybe_node<T>(mut head: Mzrc<MaybeNode<T>>) {
     }
 }
 
-impl<'a, T> Node<'a, T> {
-    fn new(val: ThunkAny<'a, T>, next: Rc<ThunkAny<'a, Option<Node<'a, T>>>>) -> Node<'a, T> {
-        Node {
-            val: Rc::new(val),
-            next: Some(next),
-        }
-    }
-}
 impl<T> Drop for Node<'_, T> {
     fn drop(&mut self) {
         drop_maybe_node(self.next.take());
-    }
-}
-impl<T> Clone for Node<'_, T> {
-    fn clone(&self) -> Self {
-        Self { val: Rc::clone(&self.val), next: self.next.clone() }
     }
 }
 
@@ -110,7 +112,6 @@ fn new_mzrc<T>(t: T) -> Mzrc<T> {
     Some(Rc::new(t))
 }
 
-#[derive(Debug)]
 pub struct ThunkList<'a, T> {
     head: Mzrc<MaybeNode<'a, T>>
 }
@@ -212,6 +213,13 @@ impl<'a, T> ThunkList<'a, T> {
     pub fn from_iter<I: IntoIterator<Item=T> + 'a>(iter: I) -> ThunkList<'a, T> {
         let mut it = iter.into_iter();
         ThunkList::iterate_known(move || it.next())
+    }
+}
+impl<'a, T: std::fmt::Debug> std::fmt::Debug for ThunkList<'a, T> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_list()
+            .entries(self.iter().map(Thunk::force))
+            .finish()
     }
 }
 impl<'a, T> Drop for ThunkList<'a, T> {
