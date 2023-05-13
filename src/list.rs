@@ -191,12 +191,14 @@ impl<'a, T> ThunkList<'a, T> {
     pub fn is_empty(&self) -> bool {
         self.head.force().is_none()
     }
-    pub fn iterate(f: impl FnMut() -> Option<T> + 'a) -> ThunkList<'a, T> {
-        fn iterate_node<'a, T>(f: impl FnMut() -> Option<T> + 'a) -> MaybeNode<'a, T> {
+    pub fn iterate_known(mut f: impl FnMut() -> Option<T> + 'a) -> ThunkList<'a, T> {
+        ThunkList::iterate(move || f().map(Thunk::known))
+    }
+    pub fn iterate(f: impl FnMut() -> Option<ThunkAny<'a, T>> + 'a) -> ThunkList<'a, T> {
+        fn iterate_node<'a, T>(f: impl FnMut() -> Option<ThunkAny<'a, T>> + 'a) -> MaybeNode<'a, T> {
             Thunk::of(f)
                 .map(|mut f| {
-                    let val = f()?;
-                    let node = Node::new(Thunk::known(val), Rc::new(iterate_node(f)));
+                    let node = Node::new(f()?, Rc::new(iterate_node(f)));
                     Some(node)
                 })
                 .into_thunk()
@@ -210,7 +212,7 @@ impl<'a, T> ThunkList<'a, T> {
 
     pub fn from_iter<I: IntoIterator<Item=T> + 'a>(iter: I) -> ThunkList<'a, T> {
         let mut it = iter.into_iter();
-        ThunkList::iterate(move || it.next())
+        ThunkList::iterate_known(move || it.next())
     }
 }
 
@@ -234,6 +236,7 @@ impl<'a, 'b, T> Iterator for Iter<'a, 'b, T> {
 }
 
 #[cfg(test)]
+#[allow(dead_code)]
 mod tests {
     use std::rc::Rc;
 
@@ -298,7 +301,7 @@ mod tests {
     fn iterate() {
         let mut ctr = 0usize;
         {
-            let lst = ThunkList::iterate(|| {ctr += 1; Some(dbg!(ctr))});
+            let lst = ThunkList::iterate_known(|| {ctr += 1; Some(dbg!(ctr))});
             println!("{:?}", take_nc(&lst, 1));
             println!("{:?}", take_nc(&lst, 5));
             println!("{:?}", take_nc(&lst, 10));
