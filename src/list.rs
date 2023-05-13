@@ -13,27 +13,27 @@ struct Node<'a, T> {
     next: Option<Rc<MaybeNode<'a, T>>>
 }
 
-/// Checks if the given `Rc<T>` points to an *isolated* reference cycle of `Rc<T>`'s
+/// Checks if the given `Rc<T>` points to an *isolated* reference cycle of `Rc<T>`s
 /// (i.e., no other `Rc<T>` directly points into this reference cycle).
-/// The `f` parameter details how to get from one `Rc<T>` to another.
+/// The `f` callback indicates how to access the next `Rc<T>` in the sequence.
 /// 
-/// If this function does find a isolated cycle, it clones a `Rc<T>` in the cycle 
-/// (since this is the only `Rc<T>` pointing into the cycle, this is ensured to have 2 strong refs,
-/// and every other `Rc<T>` in the cycle should only have one).
+/// If this function does find a isolated cycle, it points to an `Rc<T>` in the cycle 
+/// Otherwise, this function returns None.
 /// 
-/// Otherwise, it will return None.
-fn find_isolated_cycle<T>(start: Rc<T>, mut f: impl FnMut(&T) -> Option<&Rc<T>>) -> Option<Rc<T>> {
-    let mut ef = |t| {
-        f(t).filter(|rc| {
-            // we want to ignore any cycles that are pointed to from other places
-            // so we got to make sure there are no other references
-            let equal = Rc::ptr_eq(&start, rc);
-            let strong_ct = Rc::strong_count(rc);
+/// If a cycle *is* found, every `Rc<T>` within the cycle is known to have 1 reference exactly.
+/// 
+/// # Safety
+/// 
+/// The provided `Rc<T>` must have at least 2 strong references.
+unsafe fn find_isolated_cycle<T>(start: Rc<T>, mut f: impl FnMut(&T) -> Option<&Rc<T>>) -> Option<*const T> {
+    // Destroy Rc in ref count
+    // SAFETY: We know there are at least 2 strong references.
+    let start = Rc::into_raw(start);
+    Rc::decrement_strong_count(start);
     
-            strong_ct == if equal { 2 } else { 1 }
-        })
-    };
-    let mut tort = ef(&start)?;
+    let mut ef = |t| f(t).filter(|rc| Rc::strong_count(rc) == 1);
+    // SAFETY: >=1 ref, still 
+    let mut tort = ef(&*start)?;
     let mut hare = ef(tort)?;
 
     while !Rc::ptr_eq(tort, hare) {
@@ -42,7 +42,41 @@ fn find_isolated_cycle<T>(start: Rc<T>, mut f: impl FnMut(&T) -> Option<&Rc<T>>)
         hare = ef(hare)?;
     }
     
-    Some(tort).cloned()
+    Some(Rc::as_ptr(tort))
+}
+fn drop_maybe_node<T>(head: Rc<MaybeNode<T>>) {
+    // Repeatedly pop nodes until we hit shared nodes, a cycle, or nothing.
+    let mut head = Some(head);
+
+    while let Some(rc) = head.take() {
+        match Rc::try_unwrap(rc) {
+            Ok(thunk) => {
+                // This data is owned only by us, so we can destroy it however we like.
+                // If this thunk is initialized (outer Option), check if it holds a Node (inner Option).
+                // If it does, set its next to be destroyed.
+                if let Some(Some(mut inner)) = thunk.try_into_inner() {
+                    head = inner.next.take();
+                }
+            },
+            Err(rc) => unsafe {
+                // This Rc has at least two references.
+                // We want to check if it has multiple references because it's part of shared data
+                // or because it's part of an isolated ref cycle.
+                if let Some(start) = find_isolated_cycle(rc, |t| t.try_get()?.as_ref()?.next.as_ref()) {
+                    // Break cycle by dereferencing Rc ptr and using it to pop Node's .next.
+                    // This is okay because only one Node points to this ptr,
+                    // and that Node should not access/mutate the ptr before it's destroyed.
+                    head = (*start.cast_mut())
+                        .try_get_mut()
+                        .unwrap_unchecked() // we know it's Some by cycle check
+                        .as_mut()
+                        .unwrap_unchecked() // also Some by cycle check
+                        .next
+                        .take();
+                }
+            },
+        }
+    }
 }
 
 impl<'a, T> Node<'a, T> {
@@ -55,49 +89,8 @@ impl<'a, T> Node<'a, T> {
 }
 impl<T> Drop for Node<'_, T> {
     fn drop(&mut self) {
-        // Repeatedly pop nodes until we hit shared nodes, a cycle, or nothing.
-        let mut head = self.next.take();
-        while let Some(rc) = head.take() {
-            match Rc::try_unwrap(rc) {
-                Ok(thunk) => {
-                    // This data is owned only by us, so we can destroy it however we like.
-                    // If this thunk is initialized (outer Option), check if it holds a Node (inner Option).
-                    // If it does, set its next to be destroyed.
-                    if let Some(Some(mut inner)) = thunk.try_into_inner() {
-                        head = inner.next.take();
-                    }
-                },
-                Err(rc) => {
-                    // This data must either be in an isolated cycle or is accessible elsewhere.
-                    // If it is part of an isolated cycle, then we can destroy it.
-                    if let Some(start) = find_isolated_cycle(rc, |t| t.try_get()?.as_ref()?.next.as_ref()) {
-                        unsafe {
-                            let ptr = Rc::into_raw(start).cast_mut();
-
-                            // Our start Rc no longer will be used, 
-                            // so destroy it in ref count to enable mutation.
-                            // SAFETY: 
-                            // 1. `ptr` is from Rc::into_raw
-                            // 2. the associated Rc came from find_isolated_cycle, 
-                            //    which dictates the returned Rc has 2 strong references.
-                            Rc::decrement_strong_count(ptr);
-
-                            // in order to chain break, we need to take an Rc off 
-                            // one of the Nodes in the chain.
-
-                            // Use the ptr to mutably access another Node and pop its .next.
-                            // This is okay because only one Node points to this ptr,
-                            // and that Node should not access/mutate the ptr before it's destroyed.
-                            head = (*ptr).try_get_mut()
-                                .unwrap_unchecked() // we know it's Some by cycle check
-                                .as_mut()
-                                .unwrap_unchecked() // also Some by cycle check
-                                .next
-                                .take();
-                        }
-                    }
-                },
-            }
+        if let Some(head) = self.next.take() {
+            drop_maybe_node(head)
         }
     }
 }
@@ -108,7 +101,7 @@ impl<T> Clone for Node<'_, T> {
 }
 
 #[derive(Debug)]
-pub struct ThunkList<'a, T> {
+pub struct ThunkList<'a, T: 'a> {
     head: Rc<MaybeNode<'a, T>>
 }
 impl<'a, T> ThunkList<'a, T> {
@@ -149,12 +142,12 @@ impl<'a, T> ThunkList<'a, T> {
         lst
     }
 
-    fn pushed<F>(self, f: F) -> ThunkList<'a, T> 
+    fn pushed<F>(mut self, f: F) -> ThunkList<'a, T> 
         where F: Thunkable<Item = T> + 'a
     {
         let node = Node::new(
             f.into_thunk().boxed(),
-            self.head
+            std::mem::take(&mut self.head)
         );
 
         ThunkList::from(node)
@@ -208,7 +201,11 @@ impl<'a, T> ThunkList<'a, T> {
         ThunkList::iterate_known(move || it.next())
     }
 }
-
+impl<'a, T: 'a> Drop for ThunkList<'a, T> {
+    fn drop(&mut self) {
+        drop_maybe_node(std::mem::take(&mut self.head))
+    }
+}
 pub struct LPtr<'a, T>(Rc<MaybeNode<'a, T>>);
 impl<'a, T> LPtr<'a, T> {
     fn new() -> Self 
@@ -278,7 +275,29 @@ mod tests {
             .cloned()
             .collect()
     }
+    fn examine_rc_path<T>(weak: &std::rc::Weak<super::MaybeNode<T>>, ct: usize) {
+        fn get_next<'a, 'b, T>(t: &'b super::MaybeNode<'a, T>) -> Option<&'b Rc<super::MaybeNode<'a, T>>> {
+            t.try_get()?.as_ref()?.next.as_ref()
+        }
 
+        println!("start ptr: {:?}, ct: {}", weak.as_ptr(), weak.strong_count());
+
+        if weak.strong_count() < 1 { return; }
+        let mut ptr = weak.as_ptr();
+
+        // SAFETY: strong count >= 1, therefore ptr exists
+        unsafe {
+            for _ in 0..ct {
+                if let Some(next) = get_next(&*ptr) {
+                    println!("ptr: {:?}, ct: {}", Rc::as_ptr(next), Rc::strong_count(next));
+                    ptr = Rc::as_ptr(next);
+                } else {
+                    println!("exit");
+    
+                }
+            }
+        }
+    }
     #[test]
     fn conner() {
         let c = ThunkList::cons_known(2usize, ThunkList::cons_known(1usize, ThunkList::new()));
@@ -306,20 +325,30 @@ mod tests {
         }
         
         {
-            let (next, lst) = ThunkList::raw_cons(Thunk::of(0usize));
-            let ptr = Rc::downgrade(&lst.head);
+            let (next, lst2) = ThunkList::raw_cons(Thunk::of(0usize));
+            let ptr = Rc::downgrade(&lst2.head);
     
             let lst = ThunkList::cons_known(3usize, 
                 ThunkList::cons_known(2usize, 
-                    ThunkList::cons_known(1usize, lst)
+                    ThunkList::cons_known(1usize, lst2.clone())
                 )
             );
             next.bind(&lst);
-
+            
             let first_ten = take_nc(&lst, 10);
             assert_eq!(first_ten, [3, 2, 1, 0, 3, 2, 1, 0, 3, 2]);
-
+            
+            examine_rc_path(&ptr, 10);
+            
+            println!();
+            println!("dropping {:?}", Rc::as_ptr(&lst.head));
             std::mem::drop(lst);
+            examine_rc_path(&ptr, 10);
+            
+            println!();
+            println!("dropping {:?}", Rc::as_ptr(&lst2.head));
+            std::mem::drop(lst2);
+            examine_rc_path(&ptr, 10);
 
             assert_eq!(ptr.strong_count(), 0, 
                 "rc still exists, strong count: {}", ptr.strong_count()

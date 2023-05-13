@@ -226,7 +226,16 @@ impl<F: Thunkable> std::fmt::Debug for Thunk<F>
             .finish()
     }
 }
-
+impl<T: Default> Default for Thunk<fn() -> T> {
+    fn default() -> Self {
+        Thunk::new(Default::default)
+    }
+}
+impl<'a, T: Default + 'a> Default for ThunkAny<'a, T> {
+    fn default() -> Self {
+        Thunk::<fn() -> T>::default().boxed()
+    }
+}
 /// Similar to Thunkable but using a &mut self binding.
 /// The ThunkDrop object should not be used afterwards.
 trait ThunkDrop {
