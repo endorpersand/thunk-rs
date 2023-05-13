@@ -191,13 +191,14 @@ impl<'a, T> ThunkList<'a, T> {
     pub fn is_empty(&self) -> bool {
         self.head.force().is_none()
     }
-    pub fn iterate(f: impl FnMut() -> T + 'a) -> ThunkList<'a, T> 
-        where T: 'a
-    {
-        fn iterate_node<'a, T: 'a>(f: impl FnMut() -> T + 'a) -> MaybeNode<'a, T> {
+    pub fn iterate(f: impl FnMut() -> Option<T> + 'a) -> ThunkList<'a, T> {
+        fn iterate_node<'a, T>(f: impl FnMut() -> Option<T> + 'a) -> MaybeNode<'a, T> {
             Thunk::of(f)
-                .map(|mut f| Node::new(Thunk::known(f()), Rc::new(iterate_node(f))))
-                .map(Some)
+                .map(|mut f| {
+                    let val = f()?;
+                    let node = Node::new(Thunk::known(val), Rc::new(iterate_node(f)));
+                    Some(node)
+                })
                 .into_thunk()
                 .boxed()
         }
@@ -205,6 +206,11 @@ impl<'a, T> ThunkList<'a, T> {
         ThunkList {
             head: iterate_node(f)
         }
+    }
+
+    pub fn from_iter<I: IntoIterator<Item=T> + 'a>(iter: I) -> ThunkList<'a, T> {
+        let mut it = iter.into_iter();
+        ThunkList::iterate(move || it.next())
     }
 }
 
@@ -292,12 +298,19 @@ mod tests {
     fn iterate() {
         let mut ctr = 0usize;
         {
-            let lst = ThunkList::iterate(|| {ctr += 1; dbg!(ctr)});
+            let lst = ThunkList::iterate(|| {ctr += 1; Some(dbg!(ctr))});
             println!("{:?}", take_nc(&lst, 1));
             println!("{:?}", take_nc(&lst, 5));
             println!("{:?}", take_nc(&lst, 10));
         }
         ctr += 1;
         println!("{ctr}");
+    }
+
+    #[test]
+    fn iterate2() {
+        let lst = ThunkList::from_iter(0..10);
+        println!("{:?}", lst.get_forced(1));
+        println!("{:?}", lst.get_forced(5));
     }
 }
