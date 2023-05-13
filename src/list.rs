@@ -107,20 +107,19 @@ impl<T> Clone for Node<'_, T> {
 }
 
 pub struct ThunkList<'a, T> {
-    head: MaybeNode<'a, T>
+    head: Rc<MaybeNode<'a, T>>
 }
 impl<'a, T> ThunkList<'a, T> {
     pub fn new() -> Self {
-        ThunkList { head: Thunk::known(None) }
+        ThunkList { head: Rc::new(Thunk::known(None)) }
     }
-
-    pub fn cons<F>(f: F, lst: &'a Self) -> ThunkList<'a, T> 
+    pub fn cons<F>(f: F, lst: &Self) -> ThunkList<'a, T> 
         where T: 'a,
               F: Thunkable<Item = T> + 'a
     {
         lst.pushed(f)
     }
-    pub fn cons_known(t: T, lst: &'a Self) -> ThunkList<'a, T>
+    pub fn cons_known(t: T, lst: &Self) -> ThunkList<'a, T>
         where T: 'a
     {
         lst.pushed_known(t)
@@ -139,37 +138,32 @@ impl<'a, T> ThunkList<'a, T> {
             .ok()
             .expect("Thunk::undef should have been empty");
 
-        ThunkList { head: Thunk::known(Some(node)) }
+        ThunkList::from(Thunk::known(Some(node)))
     }
 
-    fn pushed<F>(&'a self, f: F) -> ThunkList<'a, T> 
+    fn pushed<F>(&self, f: F) -> ThunkList<'a, T> 
         where T: 'a,
               F: Thunkable<Item = T> + 'a
     {
-        let next = Rc::new(
-            (&self.head).cloned()
-                .into_thunk()
-                .boxed()
-        );
         let node = Node::new(
             f.into_thunk().boxed(),
-            next
+            Rc::clone(&self.head)
         );
 
-        ThunkList { head: Thunk::known(Some(node)) }
+        ThunkList::from(Thunk::known(Some(node)))
     }
-    fn pushed_known(&'a self, t: T) -> ThunkList<'a, T> 
+    fn pushed_known(&self, t: T) -> ThunkList<'a, T> 
         where T: 'a
     {
         self.pushed(Thunk::of(t))
     }
 
-    pub fn split_first(&'a self) -> Option<(Rc<ThunkAny<'a, T>>, ThunkList<'a, T>)> {
+    pub fn split_first(&self) -> Option<(Rc<ThunkAny<'a, T>>, ThunkList<'a, T>)> {
         let Node { val, next } = self.head.force().as_ref()?;
 
         let val = Rc::clone(val);
-        let rest = match next.as_deref() {
-            Some(rest) => ThunkList { head: rest.cloned().into_thunk().boxed() },
+        let rest = match next.as_ref() {
+            Some(rest) => ThunkList { head: Rc::clone(rest) },
             // self.head looks like T:[]
             None => ThunkList::new(),
         };
@@ -204,9 +198,7 @@ impl<'a, T> ThunkList<'a, T> {
                 .boxed()
         }
 
-        ThunkList {
-            head: iterate_node(f)
-        }
+        ThunkList::from(iterate_node(f))
     }
 
     pub fn from_iter<I: IntoIterator<Item=T> + 'a>(iter: I) -> ThunkList<'a, T> {
@@ -218,6 +210,16 @@ impl<'a, T> ThunkList<'a, T> {
 impl<T> Default for ThunkList<'_, T> {
     fn default() -> Self {
         Self::new()
+    }
+}
+impl<T> Clone for ThunkList<'_, T> {
+    fn clone(&self) -> Self {
+        Self { head: self.head.clone() }
+    }
+}
+impl<'a, T> From<MaybeNode<'a, T>> for ThunkList<'a, T> {
+    fn from(value: MaybeNode<'a, T>) -> Self {
+        ThunkList { head: Rc::new(value) }
     }
 }
 pub struct Iter<'a, 'b, T>(Option<&'b MaybeNode<'a, T>>);
@@ -259,23 +261,12 @@ mod tests {
 
     #[test]
     fn conner() {
-        unsafe {
-            let a = Box::into_raw(Box::new(ThunkList::new()));
-            let b = Box::into_raw(Box::new(ThunkList::cons_known(1usize, &*a)));
-            let c = ThunkList::cons_known(2usize, &*b);
-            let wk = Rc::downgrade((*b).head.force().as_ref().unwrap().next.as_ref().unwrap());
+        let c = ThunkList::cons_known(2usize, &ThunkList::cons_known(1usize, &ThunkList::new()));
 
-            let mut cit = c.iter();
-            assert_eq!(cit.next().map(Thunk::force), Some(&2));
-            assert_eq!(cit.next().map(Thunk::force), Some(&1));
-            assert_eq!(cit.next().map(Thunk::force), None);
-
-            std::mem::drop(c);
-            std::mem::drop(Box::from_raw(b));
-            std::mem::drop(Box::from_raw(a));
-
-            assert!(wk.upgrade().is_none());
-        }
+        let mut cit = c.iter();
+        assert_eq!(cit.next().map(Thunk::force), Some(&2));
+        assert_eq!(cit.next().map(Thunk::force), Some(&1));
+        assert_eq!(cit.next().map(Thunk::force), None);
     }
 
     #[test]
