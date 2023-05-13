@@ -103,7 +103,7 @@ impl<T> Drop for Node<'_, T> {
 }
 impl<T> Clone for Node<'_, T> {
     fn clone(&self) -> Self {
-        Self { val: self.val.clone(), next: self.next.clone() }
+        Self { val: Rc::clone(&self.val), next: self.next.clone() }
     }
 }
 
@@ -229,7 +229,7 @@ impl<T> Default for ThunkList<'_, T> {
 }
 impl<T> Clone for ThunkList<'_, T> {
     fn clone(&self) -> Self {
-        Self { head: self.head.clone() }
+        Self { head: Rc::clone(&self.head) }
     }
 }
 impl<'a, T> From<MaybeNode<'a, T>> for ThunkList<'a, T> {
