@@ -2,11 +2,14 @@ use std::rc::Rc;
 
 use crate::{Thunk, Thunkable, ThunkAny};
 
+/// An Option<Node> thunk
+type MaybeNode<'a, T> = ThunkAny<'a, Option<Node<'a, T>>>;
+
 struct Node<'a, T> {
     val: Rc<ThunkAny<'a, T>>,
 
     // This outer Option should only be None once Node is in state to drop.
-    next: Option<Rc<ThunkAny<'a, Option<Node<'a, T>>>>>
+    next: Option<Rc<MaybeNode<'a, T>>>
 }
 
 /// Checks if the given `Rc<T>` points to an *isolated* reference cycle of `Rc<T>`'s
@@ -104,20 +107,20 @@ impl<T> Clone for Node<'_, T> {
 }
 
 pub struct ThunkList<'a, T> {
-    head: Option<Node<'a, T>>
+    head: MaybeNode<'a, T>
 }
 impl<'a, T> ThunkList<'a, T> {
     pub fn new() -> Self {
-        ThunkList { head: None }
+        ThunkList { head: Thunk::known(None) }
     }
 
-    pub fn cons<F>(f: F, lst: &Self) -> ThunkList<'a, T> 
+    pub fn cons<F>(f: F, lst: &'a Self) -> ThunkList<'a, T> 
         where T: 'a,
               F: Thunkable<Item = T> + 'a
     {
         lst.pushed(f)
     }
-    pub fn cons_known(t: T, lst: &Self) -> ThunkList<'a, T>
+    pub fn cons_known(t: T, lst: &'a Self) -> ThunkList<'a, T>
         where T: 'a
     {
         lst.pushed_known(t)
@@ -136,40 +139,45 @@ impl<'a, T> ThunkList<'a, T> {
             .ok()
             .expect("Thunk::undef should have been empty");
 
-        ThunkList { head: Some(node) }
+        ThunkList { head: Thunk::known(Some(node)) }
     }
 
-    fn pushed<F>(&self, f: F) -> ThunkList<'a, T> 
+    fn pushed<F>(&'a self, f: F) -> ThunkList<'a, T> 
         where T: 'a,
               F: Thunkable<Item = T> + 'a
     {
         let next = Rc::new(
-            Thunk::known(self.head.clone())
+            (&self.head).cloned()
+                .into_thunk()
+                .boxed()
         );
         let node = Node::new(
             f.into_thunk().boxed(),
             next
         );
 
-        ThunkList { head: Some(node) }
+        ThunkList { head: Thunk::known(Some(node)) }
     }
-    fn pushed_known(&self, t: T) -> ThunkList<'a, T> 
+    fn pushed_known(&'a self, t: T) -> ThunkList<'a, T> 
         where T: 'a
     {
         self.pushed(Thunk::of(t))
     }
 
-    pub fn split_first(&self) -> Option<(Rc<ThunkAny<'a, T>>, ThunkList<'a, T>)> {
-        let Node { val, next } = self.head.as_ref()?;
-        
-        let head = next.as_deref()
-            .map(Thunk::force)
-            .and_then(Option::clone);
+    pub fn split_first(&'a self) -> Option<(Rc<ThunkAny<'a, T>>, ThunkList<'a, T>)> {
+        let Node { val, next } = self.head.force().as_ref()?;
 
-        Some((Rc::clone(val), ThunkList { head }))
+        let val = Rc::clone(val);
+        let rest = match next.as_deref() {
+            Some(rest) => ThunkList { head: rest.cloned().into_thunk().boxed() },
+            // self.head looks like T:[]
+            None => ThunkList::new(),
+        };
+        
+        Some((val, rest))
     }
     pub fn iter(&self) -> Iter<'a, '_, T> {
-        Iter(self.head.as_ref())
+        Iter(Some(&self.head))
     }
     pub fn get(&self, n: usize) -> Option<&ThunkAny<'a, T>> {
         self.iter().nth(n)
@@ -181,12 +189,12 @@ impl<'a, T> ThunkList<'a, T> {
         self.iter().count()
     }
     pub fn is_empty(&self) -> bool {
-        self.head.is_none()
+        self.head.force().is_none()
     }
     pub fn iterate(f: impl FnMut() -> T + 'a) -> ThunkList<'a, T> 
         where T: 'a
     {
-        fn iterate_node<'a, T: 'a>(f: impl FnMut() -> T + 'a) -> ThunkAny<'a, Option<Node<'a, T>>> {
+        fn iterate_node<'a, T: 'a>(f: impl FnMut() -> T + 'a) -> MaybeNode<'a, T> {
             Thunk::of(f)
                 .map(|mut f| Node::new(Thunk::known(f()), Rc::new(iterate_node(f))))
                 .map(Some)
@@ -195,7 +203,7 @@ impl<'a, T> ThunkList<'a, T> {
         }
 
         ThunkList {
-            head: iterate_node(f).dethunk()
+            head: iterate_node(f)
         }
     }
 }
@@ -205,17 +213,15 @@ impl<T> Default for ThunkList<'_, T> {
         Self::new()
     }
 }
-pub struct Iter<'a, 'b, T>(Option<&'b Node<'a, T>>);
+pub struct Iter<'a, 'b, T>(Option<&'b MaybeNode<'a, T>>);
 impl<'a, 'b, T> Iterator for Iter<'a, 'b, T> {
     type Item = &'b ThunkAny<'a, T>;
 
     fn next(&mut self) -> Option<Self::Item> {
-        let node = self.0?;
-        let val = &*node.val;
-
-        self.0 = node.next.as_deref()
-            .map(Thunk::force)
-            .and_then(Option::as_ref);
+        let node = self.0?.force().as_ref()?;
+        
+        let val = node.val.as_ref();
+        self.0 = node.next.as_deref();
         
         Some(val)
     }
@@ -245,20 +251,30 @@ mod tests {
 
     #[test]
     fn conner() {
-        let t = ThunkList::new();
-        let u = ThunkList::cons_known(2usize, &ThunkList::cons_known(1usize, &t));
-        let mut ui = u.iter();
+        unsafe {
+            let a = Box::into_raw(Box::new(ThunkList::new()));
+            let b = Box::into_raw(Box::new(ThunkList::cons_known(1usize, &*a)));
+            let c = ThunkList::cons_known(2usize, &*b);
+            let wk = Rc::downgrade((*b).head.force().as_ref().unwrap().next.as_ref().unwrap());
 
-        assert_eq!(ui.next().map(Thunk::force), Some(&2));
-        assert_eq!(ui.next().map(Thunk::force), Some(&1));
-        assert_eq!(ui.next().map(Thunk::force), None);
+            let mut cit = c.iter();
+            assert_eq!(cit.next().map(Thunk::force), Some(&2));
+            assert_eq!(cit.next().map(Thunk::force), Some(&1));
+            assert_eq!(cit.next().map(Thunk::force), None);
+
+            std::mem::drop(c);
+            std::mem::drop(Box::from_raw(b));
+            std::mem::drop(Box::from_raw(a));
+
+            assert!(wk.upgrade().is_none());
+        }
     }
 
     #[test]
     fn cc() {
         let t: usize = 0;
         let lst = ThunkList::cons_cyclic(Thunk::of(t));
-        let ptr = Rc::downgrade(&lst.head.as_ref().unwrap().val);
+        let ptr = Rc::downgrade(&lst.head.force().as_ref().unwrap().val);
 
         // println!("rc count: {}", Rc::strong_count(&lst.head.as_ref().unwrap().val));
         let first_ten: Vec<_> = lst.iter()
