@@ -4,7 +4,9 @@ use crate::{Thunk, Thunkable, ThunkAny};
 
 struct Node<T> {
     val: Rc<ThunkAny<'static, T>>,
-    next: Option<Rc<ThunkAny<'static, Node<T>>>>
+
+    // This outer Option should only be None once Node is in state to drop.
+    next: Option<Rc<ThunkAny<'static, Option<Node<T>>>>>
 }
 
 /// Checks if the given `Rc<T>` points to an *isolated* reference cycle of `Rc<T>`'s
@@ -39,6 +41,14 @@ fn find_isolated_cycle<T>(start: Rc<T>, mut f: impl FnMut(&T) -> Option<&Rc<T>>)
     Some(tort).cloned()
 }
 
+impl<T> Node<T> {
+    fn new(val: ThunkAny<'static, T>, next: Rc<ThunkAny<'static, Option<Node<T>>>>) -> Node<T> {
+        Node {
+            val: Rc::new(val),
+            next: Some(next),
+        }
+    }
+}
 impl<T> Drop for Node<T> {
     fn drop(&mut self) {
         // Repeatedly pop nodes until we hit shared nodes, a cycle, or nothing.
@@ -47,26 +57,37 @@ impl<T> Drop for Node<T> {
             match Rc::try_unwrap(rc) {
                 Ok(thunk) => {
                     // This data is owned only by us, so we can destroy it however we like.
-                    if let Some(mut inner) = thunk.try_into_inner() {
+                    // If this thunk is initialized (outer Option), check if it holds a Node (inner Option).
+                    // If it does, set its next to be destroyed.
+                    if let Some(Some(mut inner)) = thunk.try_into_inner() {
                         head = inner.next.take();
                     }
                 },
                 Err(rc) => {
-                    // This data either is in a cycle or shared among linked lists.
-                    if let Some(start) = find_isolated_cycle(rc, |t| t.try_get().and_then(|n| n.next.as_ref())) {
-                        // If this data is in a cycle, use `start` to enter cycle and cut the cycle.
+                    // This data must either be in an isolated cycle or is accessible elsewhere.
+                    // If it is part of an isolated cycle, then we can destroy it.
+                    if let Some(start) = find_isolated_cycle(rc, |t| t.try_get()?.as_ref()?.next.as_ref()) {
                         unsafe {
                             let ptr = Rc::into_raw(start).cast_mut();
-                            // We do not intend to reuse start ptr, so treat it as destroyed.
+
+                            // Our start Rc no longer will be used, 
+                            // so destroy it in ref count to enable mutation.
                             // SAFETY: 
                             // 1. `ptr` is from Rc::into_raw
                             // 2. the associated Rc came from find_isolated_cycle, 
                             //    which dictates the returned Rc has 2 strong references.
                             Rc::decrement_strong_count(ptr);
-        
-                            // access an inner Rc and drop something:
-                            head = (*ptr).try_get_mut() // The deref'd ptr known to have 1 ref
-                                .unwrap_unchecked() // known to be Some by cycle check
+
+                            // in order to chain break, we need to take an Rc off 
+                            // one of the Nodes in the chain.
+
+                            // Use the ptr to mutably access another Node and pop its .next.
+                            // This is okay because only one Node points to this ptr,
+                            // and that Node should not access/mutate the ptr before it's destroyed.
+                            head = (*ptr).try_get_mut()
+                                .unwrap_unchecked() // we know it's Some by cycle check
+                                .as_mut()
+                                .unwrap_unchecked() // also Some by cycle check
                                 .next
                                 .take();
                         }
@@ -106,11 +127,12 @@ impl<T> ThunkList<T> {
               F: Thunkable<Item = T> + 'static
     {
         let next = Rc::new(Thunk::undef().boxed());
-        let node = Node {
-            val: Rc::new(Thunk::new(f).boxed()),
-            next: Some(Rc::clone(&next)),
-        };
-        next.set(node.clone())
+        let node = Node::new(
+            f.into_thunk().boxed(),
+            Rc::clone(&next)
+        );
+        
+        next.set(Some(node.clone()))
             .ok()
             .expect("Thunk::undef should have been empty");
 
@@ -121,16 +143,13 @@ impl<T> ThunkList<T> {
         where T: 'static,
               F: Thunkable<Item = T> + 'static
     {
-        let next = self.head.as_ref()
-            .cloned()
-            .map(Thunk::of)
-            .map(Thunk::boxed)
-            .map(Rc::new);
-        
-        let node = Node {
-            val: Rc::new(f.into_thunk().boxed()),
+        let next = Rc::new(
+            Thunk::of(self.head.clone()).boxed()
+        );
+        let node = Node::new(
+            f.into_thunk().boxed(),
             next
-        };
+        );
 
         ThunkList { head: Some(node) }
     }
@@ -145,7 +164,7 @@ impl<T> ThunkList<T> {
         
         let head = next.as_deref()
             .map(Thunk::force)
-            .cloned();
+            .and_then(Option::clone);
 
         Some((Rc::clone(val), ThunkList { head }))
     }
@@ -178,7 +197,10 @@ impl<'a, T> Iterator for Iter<'a, T> {
     fn next(&mut self) -> Option<Self::Item> {
         let node = self.0?;
         let val = &*node.val;
-        self.0 = node.next.as_ref().map(|t| t.force());
+
+        self.0 = node.next.as_deref()
+            .map(Thunk::force)
+            .and_then(Option::as_ref);
         
         Some(val)
     }
