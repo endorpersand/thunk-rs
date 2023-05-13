@@ -114,8 +114,7 @@ impl<'a, T> ThunkList<'a, T> {
         ThunkList { head: Rc::new(Thunk::known(None)) }
     }
     pub fn cons<F>(f: F, lst: &Self) -> ThunkList<'a, T> 
-        where T: 'a,
-              F: Thunkable<Item = T> + 'a
+        where F: Thunkable<Item = T> + 'a
     {
         lst.pushed(f)
     }
@@ -142,8 +141,7 @@ impl<'a, T> ThunkList<'a, T> {
     }
 
     fn pushed<F>(&self, f: F) -> ThunkList<'a, T> 
-        where T: 'a,
-              F: Thunkable<Item = T> + 'a
+        where F: Thunkable<Item = T> + 'a
     {
         let node = Node::new(
             f.into_thunk().boxed(),
