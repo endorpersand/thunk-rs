@@ -5,6 +5,7 @@ use crate::{Thunk, Thunkable, ThunkAny};
 /// An Option<Node> thunk
 type MaybeNode<'a, T> = ThunkAny<'a, Option<Node<'a, T>>>;
 
+#[derive(Debug)]
 struct Node<'a, T> {
     val: Rc<ThunkAny<'a, T>>,
 
@@ -106,6 +107,7 @@ impl<T> Clone for Node<'_, T> {
     }
 }
 
+#[derive(Debug)]
 pub struct ThunkList<'a, T> {
     head: Rc<MaybeNode<'a, T>>
 }
@@ -113,42 +115,49 @@ impl<'a, T> ThunkList<'a, T> {
     pub fn new() -> Self {
         ThunkList { head: Rc::new(Thunk::known(None)) }
     }
-    pub fn cons<F>(f: F, lst: &Self) -> ThunkList<'a, T> 
+    pub fn cons<F>(f: F, lst: Self) -> ThunkList<'a, T> 
         where F: Thunkable<Item = T> + 'a
     {
         lst.pushed(f)
     }
-    pub fn cons_known(t: T, lst: &Self) -> ThunkList<'a, T>
+    pub fn cons_known(t: T, lst: Self) -> ThunkList<'a, T>
         where T: 'a
     {
         lst.pushed(Thunk::of(t))
     }
+
+    pub fn raw_cons<F>(f: F) -> (LPtr<'a, T>, ThunkList<'a, T>)
+        where T: 'a,
+              F: Thunkable<Item = T> + 'a
+    {
+        let next = LPtr::new();
+        let node = Node::new(
+            f.into_thunk().boxed(),
+            Rc::clone(&next.0)
+        );
+
+        (next, ThunkList::from(node))
+    }
+
     pub fn cons_cyclic<F>(f: F) -> ThunkList<'a, T> 
         where T: 'a,
               F: Thunkable<Item = T> + 'a
     {
-        let next = Rc::new(Thunk::undef().boxed());
-        let node = Node::new(
-            f.into_thunk().boxed(),
-            Rc::clone(&next)
-        );
+        let (next, lst) = ThunkList::raw_cons(f);
+        next.bind(&lst);
         
-        next.set(Some(node.clone()))
-            .ok()
-            .expect("Thunk::undef should have been empty");
-
-        ThunkList::from(Thunk::known(Some(node)))
+        lst
     }
 
-    fn pushed<F>(&self, f: F) -> ThunkList<'a, T> 
+    fn pushed<F>(self, f: F) -> ThunkList<'a, T> 
         where F: Thunkable<Item = T> + 'a
     {
         let node = Node::new(
             f.into_thunk().boxed(),
-            Rc::clone(&self.head)
+            self.head
         );
 
-        ThunkList::from(Thunk::known(Some(node)))
+        ThunkList::from(node)
     }
 
     pub fn split_first(&self) -> Option<(Rc<ThunkAny<'a, T>>, ThunkList<'a, T>)> {
@@ -200,6 +209,19 @@ impl<'a, T> ThunkList<'a, T> {
     }
 }
 
+pub struct LPtr<'a, T>(Rc<MaybeNode<'a, T>>);
+impl<'a, T> LPtr<'a, T> {
+    fn new() -> Self 
+        where T: 'a
+    {
+        LPtr(Rc::new(Thunk::undef().boxed()))
+    }
+
+    pub fn bind(self, l: &ThunkList<'a, T>) -> bool {
+        self.0.set(l.head.force().clone()).is_ok()
+    }
+}
+
 impl<T> Default for ThunkList<'_, T> {
     fn default() -> Self {
         Self::new()
@@ -213,6 +235,11 @@ impl<T> Clone for ThunkList<'_, T> {
 impl<'a, T> From<MaybeNode<'a, T>> for ThunkList<'a, T> {
     fn from(value: MaybeNode<'a, T>) -> Self {
         ThunkList { head: Rc::new(value) }
+    }
+}
+impl<'a, T> From<Node<'a, T>> for ThunkList<'a, T> {
+    fn from(value: Node<'a, T>) -> Self {
+        ThunkList::from(Thunk::known(Some(value)))
     }
 }
 pub struct Iter<'a, 'b, T>(Option<&'b MaybeNode<'a, T>>);
@@ -254,7 +281,7 @@ mod tests {
 
     #[test]
     fn conner() {
-        let c = ThunkList::cons_known(2usize, &ThunkList::cons_known(1usize, &ThunkList::new()));
+        let c = ThunkList::cons_known(2usize, ThunkList::cons_known(1usize, ThunkList::new()));
 
         let mut cit = c.iter();
         assert_eq!(cit.next().map(Thunk::force), Some(&2));
@@ -264,20 +291,40 @@ mod tests {
 
     #[test]
     fn cc() {
-        let t: usize = 0;
-        let lst = ThunkList::cons_cyclic(Thunk::of(t));
-        let ptr = Rc::downgrade(&lst.head.force().as_ref().unwrap().val);
+        {
+            const N: usize = 13;
+            let lst = ThunkList::cons_cyclic(Thunk::of(N));
+            let ptr = Rc::downgrade(&lst.head);
+    
+            let first_ten = take_nc(&lst, 10);
+            assert_eq!(first_ten, [N; 10]);
+    
+            std::mem::drop(lst);
+            assert_eq!(ptr.strong_count(), 0, 
+                "rc still exists, strong count: {}", ptr.strong_count()
+            );
+        }
+        
+        {
+            let (next, lst) = ThunkList::raw_cons(Thunk::of(0usize));
+            let ptr = Rc::downgrade(&lst.head);
+    
+            let lst = ThunkList::cons_known(3usize, 
+                ThunkList::cons_known(2usize, 
+                    ThunkList::cons_known(1usize, lst)
+                )
+            );
+            next.bind(&lst);
 
-        // println!("rc count: {}", Rc::strong_count(&lst.head.as_ref().unwrap().val));
-        let first_ten: Vec<_> = lst.iter()
-            .take(10)
-            .map(Thunk::force)
-            .copied()
-            .collect();
-        assert_eq!(first_ten, [t; 10]);
+            let first_ten = take_nc(&lst, 10);
+            assert_eq!(first_ten, [3, 2, 1, 0, 3, 2, 1, 0, 3, 2]);
 
-        std::mem::drop(lst);
-        assert!(ptr.upgrade().is_none(), "rc still exists, strong count: {}", ptr.strong_count() - 1);
+            std::mem::drop(lst);
+
+            assert_eq!(ptr.strong_count(), 0, 
+                "rc still exists, strong count: {}", ptr.strong_count()
+            );
+        }
     }
 
     #[test]
