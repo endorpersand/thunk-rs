@@ -107,6 +107,12 @@ impl<T, F> ThunkInner<T, F> {
     fn is_initialized(&self) -> bool {
         self.inner.get().is_some()
     }
+    fn map<G>(self, m: impl FnOnce(F) -> G) -> ThunkInner<T, G> {
+        ThunkInner {
+            inner: self.inner,
+            init: Cell::new(self.init.into_inner().map(m))
+        }
+    }
 }
 
 impl<T: Clone, F: Clone> Clone for ThunkInner<T, F> {
@@ -167,17 +173,7 @@ impl<F: Thunkable> Thunk<F> {
     pub fn boxed<'a>(self) -> ThunkAny<'a, F::Item>
         where F: 'a
     {
-        let internal = self.inner;
-        
-        let inner = ThunkInner {
-            inner: internal.inner,
-            init: Cell::new({
-                internal.init.into_inner()
-                    .map(Thunkable::into_box)
-            })
-        };
-        
-        Thunk { inner }
+        Thunk { inner: self.inner.map(Thunkable::into_box) }
     }
 
     pub fn try_get(&self) -> Option<&F::Item> {
