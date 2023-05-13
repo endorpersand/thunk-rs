@@ -195,9 +195,8 @@ impl<'a, T> ThunkList<'a, T> {
         ThunkList::iterate(move || f().map(Thunk::known))
     }
     pub fn iterate(f: impl FnMut() -> Option<ThunkAny<'a, T>> + 'a) -> ThunkList<'a, T> {
-        fn iterate_node<'a, T>(f: impl FnMut() -> Option<ThunkAny<'a, T>> + 'a) -> MaybeNode<'a, T> {
-            Thunk::of(f)
-                .map(|mut f| {
+        fn iterate_node<'a, T>(mut f: impl FnMut() -> Option<ThunkAny<'a, T>> + 'a) -> MaybeNode<'a, T> {
+            Thunk::new(|| {
                     let node = Node::new(f()?, Rc::new(iterate_node(f)));
                     Some(node)
                 })

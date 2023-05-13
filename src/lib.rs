@@ -7,8 +7,8 @@ use std::cell::{OnceCell, Cell};
 
 pub trait Thunkable {
     type Item;
-
     fn resolve(self) -> Self::Item;
+
     fn into_thunk(self) -> Thunk<Self> 
         where Self: Sized
     {
@@ -61,7 +61,7 @@ pub trait Thunkable {
         ThunkBox::new(self)
     }
 }
-impl<T> Thunkable for fn() -> T {
+impl<T, F: FnOnce() -> T> Thunkable for F {
     type Item = T;
 
     fn resolve(self) -> Self::Item {
@@ -144,10 +144,7 @@ pub struct Thunk<F: Thunkable> {
 }
 impl<T> Thunk<fn() -> T> {
     pub fn undef() -> Self {
-        Thunk::with(|| panic!("undef"))
-    }
-    pub fn with(f: fn() -> T) -> Self {
-        Thunk::new(f)
+        Thunk::new(|| panic!("undef"))
     }
     pub fn of(t: T) -> Self {
         Thunk::known(t)
@@ -275,11 +272,11 @@ mod tests {
 
     #[test]
     fn thunky() {
-        let x = Thunk::with(|| {
+        let x = Thunk::new(|| {
             println!("initialized x");
             2u32
         });
-        let y = Thunk::with(|| {
+        let y = Thunk::new(|| {
             println!("initialized y");
             3u32
         });
@@ -289,8 +286,7 @@ mod tests {
             (&y).cloned().into_box(),
             (&x).cloned().into_box(),
         ];
-        let z = Thunk::of(y)
-            .map(|y| {
+        let z = Thunk::new(|| {
                 y.into_iter()
                     .map(|b| b.resolve())
                     .collect::<Vec<_>>()
@@ -305,7 +301,7 @@ mod tests {
 
     #[test]
     fn doubler() {
-        let x = Thunk::with(|| dbg!(false));
+        let x = Thunk::new(|| dbg!(false));
         let y = Thunk::undef();
         let w = (&x).zip(&y)
             .map(|(x, y)| *x.resolve() && *y.resolve())
@@ -331,8 +327,8 @@ mod tests {
 
     #[test]
     fn newthunk() {
-        let x = Thunk::with(|| dbg!(2));
-        let y = Thunk::with(|| dbg!(3));
+        let x = Thunk::new(|| dbg!(2));
+        let y = Thunk::new(|| dbg!(3));
 
         println!("creating thunk sum");
         let sum = Seq(&x, &y)
@@ -342,7 +338,7 @@ mod tests {
         println!("created thunk sum");
         println!("{}", sum.force());
 
-        let z = Thunk::with(|| dbg!(true));
+        let z = Thunk::new(|| dbg!(true));
         let w = Thunk::undef();
         let res = (&z).zip(&w)
             .zip(&w)
