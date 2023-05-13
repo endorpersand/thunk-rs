@@ -10,7 +10,7 @@ struct Node<'a, T> {
     val: Rc<ThunkAny<'a, T>>,
 
     // This outer Option should only be None once Node is in state to drop.
-    next: Option<Rc<MaybeNode<'a, T>>>
+    next: Mzrc<MaybeNode<'a, T>>
 }
 
 /// Checks if the given `Rc<T>` points to an *isolated* reference cycle of `Rc<T>`s
@@ -44,10 +44,9 @@ unsafe fn find_isolated_cycle<T>(start: Rc<T>, mut f: impl FnMut(&T) -> Option<&
     
     Some(Rc::as_ptr(tort))
 }
-fn drop_maybe_node<T>(head: Rc<MaybeNode<T>>) {
-    // Repeatedly pop nodes until we hit shared nodes, a cycle, or nothing.
-    let mut head = Some(head);
 
+fn drop_maybe_node<T>(mut head: Mzrc<MaybeNode<T>>) {
+    // Repeatedly pop nodes until we hit shared nodes, a cycle, or nothing.
     while let Some(rc) = head.take() {
         match Rc::try_unwrap(rc) {
             Ok(thunk) => {
@@ -89,9 +88,7 @@ impl<'a, T> Node<'a, T> {
 }
 impl<T> Drop for Node<'_, T> {
     fn drop(&mut self) {
-        if let Some(head) = self.next.take() {
-            drop_maybe_node(head)
-        }
+        drop_maybe_node(self.next.take());
     }
 }
 impl<T> Clone for Node<'_, T> {
@@ -100,13 +97,26 @@ impl<T> Clone for Node<'_, T> {
     }
 }
 
+/// Wrapper indicating an Rc ptr or null.
+/// 
+/// In a drop impl, `.take` can be called to change the Rc without causing moves.
+/// 
+/// This could be done unsafely (and probably less clunkily) with `*const T` 
+/// and `Rc::into_raw`/`Rc::from_raw`ing back
+/// and forth... or we could just let Rust handle all the work. So...
+type Mzrc<T> = Option<Rc<T>>;
+
+fn new_mzrc<T>(t: T) -> Mzrc<T> {
+    Some(Rc::new(t))
+}
+
 #[derive(Debug)]
-pub struct ThunkList<'a, T: 'a> {
-    head: Rc<MaybeNode<'a, T>>
+pub struct ThunkList<'a, T> {
+    head: Mzrc<MaybeNode<'a, T>>
 }
 impl<'a, T> ThunkList<'a, T> {
     pub fn new() -> Self {
-        ThunkList { head: Rc::new(Thunk::known(None)) }
+        ThunkList { head: new_mzrc(Thunk::known(None)) }
     }
     pub fn cons<F>(f: F, lst: Self) -> ThunkList<'a, T> 
         where F: Thunkable<Item = T> + 'a
@@ -145,20 +155,20 @@ impl<'a, T> ThunkList<'a, T> {
     fn pushed<F>(mut self, f: F) -> ThunkList<'a, T> 
         where F: Thunkable<Item = T> + 'a
     {
-        let node = Node::new(
-            f.into_thunk().boxed(),
-            std::mem::take(&mut self.head)
-        );
+        let node = Node {
+            val: Rc::new(f.into_thunk().boxed()),
+            next: self.head.take(),
+        };
 
         ThunkList::from(node)
     }
 
     pub fn split_first(&self) -> Option<(Rc<ThunkAny<'a, T>>, ThunkList<'a, T>)> {
-        let Node { val, next } = self.head.force().as_ref()?;
+        let Node { val, next } = self.head.as_ref()?.force().as_ref()?;
 
         let val = Rc::clone(val);
         let rest = match next.as_ref() {
-            Some(rest) => ThunkList { head: Rc::clone(rest) },
+            Some(rest) => ThunkList { head: Some(Rc::clone(rest)) },
             // self.head looks like T:[]
             None => ThunkList::new(),
         };
@@ -166,7 +176,7 @@ impl<'a, T> ThunkList<'a, T> {
         Some((val, rest))
     }
     pub fn iter(&self) -> Iter<'a, '_, T> {
-        Iter(Some(&self.head))
+        Iter(self.head.as_deref())
     }
     pub fn get(&self, n: usize) -> Option<&ThunkAny<'a, T>> {
         self.iter().nth(n)
@@ -178,7 +188,10 @@ impl<'a, T> ThunkList<'a, T> {
         self.iter().count()
     }
     pub fn is_empty(&self) -> bool {
-        self.head.force().is_none()
+        match self.head.as_ref() {
+            Some(t) => t.force().is_none(),
+            None => true,
+        }
     }
     pub fn iterate_known(mut f: impl FnMut() -> Option<T> + 'a) -> ThunkList<'a, T> {
         ThunkList::iterate(move || f().map(Thunk::known))
@@ -201,9 +214,9 @@ impl<'a, T> ThunkList<'a, T> {
         ThunkList::iterate_known(move || it.next())
     }
 }
-impl<'a, T: 'a> Drop for ThunkList<'a, T> {
+impl<'a, T> Drop for ThunkList<'a, T> {
     fn drop(&mut self) {
-        drop_maybe_node(std::mem::take(&mut self.head))
+        drop_maybe_node(self.head.take())
     }
 }
 pub struct LPtr<'a, T>(Rc<MaybeNode<'a, T>>);
@@ -215,7 +228,11 @@ impl<'a, T> LPtr<'a, T> {
     }
 
     pub fn bind(self, l: &ThunkList<'a, T>) -> bool {
-        self.0.set(l.head.force().clone()).is_ok()
+        let val = match &l.head {
+            Some(t) => t.force().clone(),
+            None => None,
+        };
+        self.0.set(val).is_ok()
     }
 }
 
@@ -226,12 +243,12 @@ impl<T> Default for ThunkList<'_, T> {
 }
 impl<T> Clone for ThunkList<'_, T> {
     fn clone(&self) -> Self {
-        Self { head: Rc::clone(&self.head) }
+        Self { head: self.head.clone() }
     }
 }
 impl<'a, T> From<MaybeNode<'a, T>> for ThunkList<'a, T> {
     fn from(value: MaybeNode<'a, T>) -> Self {
-        ThunkList { head: Rc::new(value) }
+        ThunkList { head: new_mzrc(value) }
     }
 }
 impl<'a, T> From<Node<'a, T>> for ThunkList<'a, T> {
@@ -313,7 +330,7 @@ mod tests {
         {
             const N: usize = 13;
             let lst = ThunkList::cons_cyclic(Thunk::of(N));
-            let ptr = Rc::downgrade(&lst.head);
+            let ptr = Rc::downgrade(lst.head.as_ref().unwrap());
     
             let first_ten = take_nc(&lst, 10);
             assert_eq!(first_ten, [N; 10]);
@@ -326,7 +343,7 @@ mod tests {
         
         {
             let (next, lst2) = ThunkList::raw_cons(Thunk::of(0usize));
-            let ptr = Rc::downgrade(&lst2.head);
+            let ptr = Rc::downgrade(lst2.head.as_ref().unwrap());
     
             let lst = ThunkList::cons_known(3usize, 
                 ThunkList::cons_known(2usize, 
@@ -341,12 +358,12 @@ mod tests {
             examine_rc_path(&ptr, 10);
             
             println!();
-            println!("dropping {:?}", Rc::as_ptr(&lst.head));
+            println!("dropping {:?}", Rc::as_ptr(lst.head.as_ref().unwrap()));
             std::mem::drop(lst);
             examine_rc_path(&ptr, 10);
             
             println!();
-            println!("dropping {:?}", Rc::as_ptr(&lst2.head));
+            println!("dropping {:?}", Rc::as_ptr(lst2.head.as_ref().unwrap()));
             std::mem::drop(lst2);
             examine_rc_path(&ptr, 10);
 
