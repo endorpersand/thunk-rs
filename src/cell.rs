@@ -4,6 +4,7 @@ use std::cell::UnsafeCell;
 use std::convert::Infallible;
 use std::mem::{ManuallyDrop, size_of};
 
+#[repr(C)]
 pub(crate) union CovUnsafeCell<T, const T_SIZE: usize> {
     cell: ManuallyDrop<UnsafeCell<[u8; T_SIZE]>>,
     value: ManuallyDrop<T>
@@ -180,5 +181,16 @@ mod tests {
             }
             CovLazyCell::force(&lazy);
         }
+    }
+
+    #[test]
+    fn is_miri_happy2() {
+        fn write<T>(c: &CovUnsafeCell<T, 1>, t: T) {
+            unsafe { c.get().write(t); }
+        }
+
+        let cell: CovUnsafeCell<i8, 1> = CovUnsafeCell { value: std::mem::ManuallyDrop::new(14) };
+        write(&cell, 0);
+        println!("{}", unsafe { &*cell.get() });
     }
 }
