@@ -1,6 +1,9 @@
+#![feature(generic_const_exprs)]
+
 pub mod tuple;
 pub mod transform;
 pub mod list;
+mod cell;
 pub use transform::zip;
 
 use std::cell::{OnceCell, Cell};
