@@ -115,10 +115,9 @@ impl<T, const OT_SIZE: usize> TakeCell<T, OT_SIZE> {
     pub fn take(&self) -> Option<T> {
         // SAFETY: Covariance is maintained because taking can't
         // mutate a memory location with a lifetime dependent value
+        //
+        // There is no other way to read the data here, so we're fine.
         unsafe { &mut *self.inner.get() }.take()
-    }
-    pub fn get(&self) -> Option<&T> {
-        unsafe { &*self.inner.get() }.as_ref()
     }
     pub fn get_mut(&mut self) -> Option<&mut T> {
         self.inner.get_mut().as_mut()
