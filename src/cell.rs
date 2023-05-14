@@ -110,6 +110,9 @@ impl<T> TakeCell<T, {size_of::<Option<T>>()}> {
     pub fn new(t: T) -> Self {
         TakeCell { inner: CovUnsafeCell::new(Some(t)) }
     }
+    pub fn empty() -> Self {
+        TakeCell { inner: CovUnsafeCell::new(None) }
+    }
 }
 impl<T, const OT_SIZE: usize> TakeCell<T, OT_SIZE> {
     pub fn take(&self) -> Option<T> {
