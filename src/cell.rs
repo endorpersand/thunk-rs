@@ -103,7 +103,7 @@ impl<T, const N: usize> CovOnceCell<T, N> {
     }
 }
 
-struct TakeCell<T, const OT_SIZE: usize> {
+pub(crate) struct TakeCell<T, const OT_SIZE: usize> {
     inner: CovUnsafeCell<Option<T>, OT_SIZE>
 }
 impl<T> TakeCell<T, {size_of::<Option<T>>()}> {
