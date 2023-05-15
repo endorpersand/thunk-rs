@@ -421,7 +421,7 @@ mod tests {
         let s = "str";
         {
             let t = String::from("hello");
-            let x = ThunkList::cons_known(s, ThunkList::cons_known(&t, ThunkList::new()));
+            let x = list![s, &t];
             std::mem::drop(t);
         }
     }
