@@ -301,7 +301,8 @@ impl<'a, T> IntoIterator for ThunkList<'a, T> {
 #[allow(unused_macros)]
 macro_rules! list {
     () => { $crate::list::ThunkList::new() };
-    ($h:expr$(, $($e:expr),*)?$(,)?) => { $crate::list::ThunkList::cons_known($h, list![$($($e),*)?]) }
+    (; $l:expr$(,)?) => { $l };
+    ($h:expr$(, $($e:expr),*)?$(; $l:expr)?$(,)?) => { $crate::list::ThunkList::cons_known($h, list![$($($e),*)?$(; $l)?]) }
 }
 
 #[cfg(test)]
@@ -386,11 +387,7 @@ mod tests {
             let (next, lst2) = ThunkList::raw_cons(Thunk::of(0usize));
             let ptr = Rc::downgrade(lst2.head.as_ref().unwrap());
     
-            let lst = ThunkList::cons_known(3usize, 
-                ThunkList::cons_known(2usize, 
-                    ThunkList::cons_known(1usize, lst2.clone())
-                )
-            );
+            let lst = list![3, 2, 1; lst2.clone()];
             next.bind(&lst);
             
             let first_ten = take_nc(&lst, 10);
