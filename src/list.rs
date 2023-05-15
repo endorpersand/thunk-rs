@@ -152,17 +152,18 @@ impl<'a, T> ThunkList<'a, T> {
         ThunkList::from(node)
     }
 
-    pub fn split_first(&self) -> Option<(Rc<ThunkAny<'a, T>>, ThunkList<'a, T>)> {
-        let Node { val, next } = self.head.as_ref()?.force().as_ref()?;
+    pub fn split_first(mut self) -> Option<(Rc<ThunkAny<'a, T>>, ThunkList<'a, T>)> {
+        let node = match Rc::try_unwrap(self.head.take()?) {
+            Ok(t) => t.dethunk(),
+            Err(e) => e.force().clone(),
+        }?;
 
+        let Node { ref val, ref next } = node;
         let val = Rc::clone(val);
-        let rest = match next.as_ref() {
-            Some(rest) => ThunkList { head: Some(Rc::clone(rest)) },
-            // self.head looks like T:[]
-            None => ThunkList::new(),
-        };
-        
-        Some((val, rest))
+        let next = next.clone();
+        std::mem::drop(node);
+
+        Some((val, ThunkList { head: next }))
     }
     pub fn iter(&self) -> Iter<'a, '_, T> {
         Iter(self.head.as_deref())
@@ -262,6 +263,31 @@ impl<'a, 'b, T> Iterator for Iter<'a, 'b, T> {
         Some(val)
     }
 }
+pub struct IntoIter<'a, T>(Option<ThunkList<'a, T>>);
+impl<'a, T> Iterator for IntoIter<'a, T> {
+    type Item = Rc<ThunkAny<'a, T>>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        let t = self.0.take()?;
+        let (head, rest) = t.split_first()?;
+        self.0.replace(rest);
+        Some(head)
+    }
+}
+impl<'a, T> IntoIterator for ThunkList<'a, T> {
+    type Item = Rc<ThunkAny<'a, T>>;
+    type IntoIter = IntoIter<'a, T>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        IntoIter(Some(self))
+    }
+}
+
+#[allow(unused_macros)]
+macro_rules! list {
+    () => { $crate::list::ThunkList::new() };
+    ($h:expr$(, $($e:expr),*)?$(,)?) => { $crate::list::ThunkList::cons_known($h, list![$($($e),*)?]) }
+}
 
 #[cfg(test)]
 #[allow(dead_code)]
@@ -310,12 +336,19 @@ mod tests {
     }
     #[test]
     fn conner() {
-        let c = ThunkList::cons_known(2usize, ThunkList::cons_known(1usize, ThunkList::new()));
+        let c = list![2usize, 1, 0];
 
         let mut cit = c.iter();
         assert_eq!(cit.next().map(ThunkAny::force), Some(&2));
         assert_eq!(cit.next().map(ThunkAny::force), Some(&1));
+        assert_eq!(cit.next().map(ThunkAny::force), Some(&0));
         assert_eq!(cit.next().map(ThunkAny::force), None);
+        
+        let mut cit = c.into_iter();
+        assert_eq!(cit.next().map(|t| Rc::try_unwrap(t).unwrap()).map(ThunkAny::dethunk), Some(2));
+        assert_eq!(cit.next().map(|t| Rc::try_unwrap(t).unwrap()).map(ThunkAny::dethunk), Some(1));
+        assert_eq!(cit.next().map(|t| Rc::try_unwrap(t).unwrap()).map(ThunkAny::dethunk), Some(0));
+        assert_eq!(cit.next().map(|t| Rc::try_unwrap(t).unwrap()).map(ThunkAny::dethunk), None);
     }
 
     #[test]
