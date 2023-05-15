@@ -4,6 +4,7 @@ pub mod tuple;
 pub mod transform;
 pub mod list;
 mod cell;
+use cell::TakeCell;
 pub use transform::zip;
 
 use std::cell::{OnceCell, Cell};
@@ -179,13 +180,13 @@ impl<F: Thunkable> Thunk<F> {
         self.inner.is_initialized()
     }
 
-    fn map_init<G: Thunkable<Item=F::Item>>(self, f: impl FnOnce(F) -> G) -> Thunk<G> {
-        Thunk { inner: self.inner.map(f) }
-    }
     pub fn boxed<'a>(self) -> ThunkAny<'a, F::Item>
         where F: 'a
     {
-        self.map_init(Thunkable::into_box)
+        ThunkAny { 
+            inner: self.inner.inner, 
+            init: unsafe { TakeCell::new_unchecked(self.inner.init.into_inner().map(Thunkable::into_box)) }
+        }
     }
 
     pub fn try_get(&self) -> Option<&F::Item> {
@@ -234,11 +235,11 @@ impl<T: Default> Default for Thunk<fn() -> T> {
         Thunk::new(Default::default)
     }
 }
-impl<'a, T: Default + 'a> Default for ThunkAny<'a, T> {
-    fn default() -> Self {
-        Thunk::<fn() -> T>::default().boxed()
-    }
-}
+// impl<'a, T: Default + 'a> Default for ThunkAny<'a, T> {
+//     fn default() -> Self {
+//         Thunk::<fn() -> T>::default().boxed()
+//     }
+// }
 /// Similar to Thunkable but using a &mut self binding.
 /// The ThunkDrop object should not be used afterwards.
 trait ThunkDrop {
@@ -266,6 +267,9 @@ impl<'a, T> ThunkBox<'a, T> {
     fn new<F: Thunkable<Item=T> + 'a>(f: F) -> Self {
         ThunkBox(Box::new(Some(f)))
     }
+    fn into_thunk_a(self) -> ThunkAny<'a, T> {
+        ThunkAny::new(self)
+    }
 }
 impl<'a, T> Thunkable for ThunkBox<'a, T> {
     type Item = T;
@@ -279,7 +283,87 @@ impl<'a, T> Thunkable for ThunkBox<'a, T> {
     }
 }
 
-pub type ThunkAny<'a, T> = Thunk<ThunkBox<'a, T>>;
+fn down<'a, 'b, const N: usize>(cell: &'b TakeCell<ThunkBox<'static, ()>, N>) -> &'b TakeCell<ThunkBox<'a, ()>, N> { cell }
+fn down2<'a, 'b, const N: usize>(cell: &'b ThunkAny<'static, ()>) -> &'b ThunkAny<'a, ()> { cell }
+
+// #[derive(Clone)]
+pub struct ThunkAny<'a, T> {
+    inner: OnceCell<T>,
+    init: TakeCell<ThunkBox<'a, T>, 16>
+}
+impl<'a, T> ThunkAny<'a, T> {
+    pub fn undef() -> Self {
+        ThunkAny::new((|| panic!("undef")).into_box())
+    }
+    pub fn new(f: ThunkBox<'a, T>) -> Self {
+        ThunkAny { inner: OnceCell::new(), init: unsafe { TakeCell::new_unchecked(Some(f)) } }
+    }
+    pub fn of(t: T) -> Self {
+        let inner = OnceCell::new();
+        let _ = inner.set(t);
+        ThunkAny { inner, init: unsafe { TakeCell::new_unchecked(None) } }
+    }
+    pub fn force(&self) -> &T {
+        self.inner.get_or_init(|| match self.init.take() {
+            Some(f) => f.resolve(),
+            None => panic!("no initializer")
+        })
+    }
+    pub fn force_mut(&mut self) -> &mut T {
+        self.force();
+        self.try_get_mut().expect("force should have succeeded")
+    }
+    pub fn dethunk(self) -> T {
+        self.force();
+        self.try_into_inner().expect("force should have succeeded")
+    }
+
+    pub fn set(&self, val: T) -> Result<(), T> {
+        self.inner.set(val)
+    }
+    pub fn is_initialized(&self) -> bool {
+        self.inner.get().is_some()
+    }
+
+    pub fn try_get(&self) -> Option<&T> {
+        self.inner.get()
+    }
+    pub fn try_get_mut(&mut self) -> Option<&mut T> {
+        self.inner.get_mut()
+    }
+    pub fn try_into_inner(self) -> Option<T> {
+        self.inner.into_inner()
+    }
+}
+impl<'a, T> Thunkable for ThunkAny<'a, T> {
+    type Item = T;
+
+    fn resolve(self) -> Self::Item {
+        self.dethunk()
+    }
+}
+impl<'a, T> Thunkable for &'a ThunkAny<'a, T> {
+    type Item = &'a T;
+
+    fn resolve(self) -> Self::Item {
+        self.force()
+    }
+}
+impl<'a, T> Thunkable for &'a mut ThunkAny<'a, T> {
+    type Item = &'a mut T;
+
+    fn resolve(self) -> Self::Item {
+        self.force_mut()
+    }
+}
+impl<'a, T: std::fmt::Debug> std::fmt::Debug for ThunkAny<'a, T> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ThunkAny")
+            .field("inner", &self.inner.get())
+            .field("init", &"..")
+            .finish()
+    }
+}
 
 #[cfg(test)]
 mod tests {

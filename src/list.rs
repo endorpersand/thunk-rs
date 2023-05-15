@@ -1,6 +1,6 @@
 use std::rc::Rc;
 
-use crate::{Thunk, Thunkable, ThunkAny};
+use crate::{Thunkable, ThunkAny};
 
 /// An Option<Node> thunk
 type MaybeNode<'a, T> = ThunkAny<'a, Option<Node<'a, T>>>;
@@ -117,47 +117,35 @@ pub struct ThunkList<'a, T> {
 }
 impl<'a, T> ThunkList<'a, T> {
     pub fn new() -> Self {
-        ThunkList { head: new_mzrc(Thunk::known(None)) }
+        ThunkList { head: new_mzrc(ThunkAny::of(None)) }
     }
-    pub fn cons<F>(f: F, lst: Self) -> ThunkList<'a, T> 
-        where F: Thunkable<Item = T> + 'a
-    {
+    pub fn cons(f: ThunkAny<'a, T>, lst: Self) -> ThunkList<'a, T> {
         lst.pushed(f)
     }
-    pub fn cons_known(t: T, lst: Self) -> ThunkList<'a, T>
-        where T: 'a
-    {
-        lst.pushed(Thunk::of(t))
+    pub fn cons_known(t: T, lst: Self) -> ThunkList<'a, T> {
+        lst.pushed(ThunkAny::of(t))
     }
 
-    pub fn raw_cons<F>(f: F) -> (LPtr<'a, T>, ThunkList<'a, T>)
-        where T: 'a,
-              F: Thunkable<Item = T> + 'a
-    {
+    pub fn raw_cons(f: ThunkAny<'a, T>) -> (LPtr<'a, T>, ThunkList<'a, T>) {
         let next = LPtr::new();
         let node = Node::new(
-            f.into_thunk().boxed(),
+            f,
             Rc::clone(&next.0)
         );
 
         (next, ThunkList::from(node))
     }
 
-    pub fn cons_cyclic<F>(f: F) -> ThunkList<'a, T> 
-        where T: 'a,
-              F: Thunkable<Item = T> + 'a
-    {
+    pub fn cons_cyclic(f: ThunkAny<'a, T>) -> ThunkList<'a, T> {
         let (next, lst) = ThunkList::raw_cons(f);
         next.bind(&lst);
         
         lst
     }
 
-    fn pushed<F>(mut self, f: F) -> ThunkList<'a, T> 
-        where F: Thunkable<Item = T> + 'a
-    {
+    fn pushed(mut self, f: ThunkAny<'a, T>) -> ThunkList<'a, T> {
         let node = Node {
-            val: Rc::new(f.into_thunk().boxed()),
+            val: Rc::new(f),
             next: self.head.take(),
         };
 
@@ -183,7 +171,7 @@ impl<'a, T> ThunkList<'a, T> {
         self.iter().nth(n)
     }
     pub fn get_forced(&self, n: usize) -> Option<&T> {
-        self.iter().nth(n).map(Thunk::force)
+        self.iter().nth(n).map(ThunkAny::force)
     }
     pub fn len(&self) -> usize {
         self.iter().count()
@@ -195,16 +183,15 @@ impl<'a, T> ThunkList<'a, T> {
         }
     }
     pub fn iterate_known(mut f: impl FnMut() -> Option<T> + 'a) -> ThunkList<'a, T> {
-        ThunkList::iterate(move || f().map(Thunk::known))
+        ThunkList::iterate(move || f().map(ThunkAny::of))
     }
     pub fn iterate(f: impl FnMut() -> Option<ThunkAny<'a, T>> + 'a) -> ThunkList<'a, T> {
         fn iterate_node<'a, T>(mut f: impl FnMut() -> Option<ThunkAny<'a, T>> + 'a) -> MaybeNode<'a, T> {
-            Thunk::new(|| {
-                    let node = Node::new(f()?, Rc::new(iterate_node(f)));
-                    Some(node)
-                })
-                .into_thunk()
-                .boxed()
+            (|| {
+                let node = Node::new(f()?, Rc::new(iterate_node(f)));
+                Some(node)
+            }).into_box()
+                .into_thunk_a()
         }
 
         ThunkList::from(iterate_node(f))
@@ -218,7 +205,7 @@ impl<'a, T> ThunkList<'a, T> {
 impl<'a, T: std::fmt::Debug> std::fmt::Debug for ThunkList<'a, T> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_list()
-            .entries(self.iter().map(Thunk::force))
+            .entries(self.iter().map(ThunkAny::force))
             .finish()
     }
 }
@@ -229,10 +216,8 @@ impl<'a, T> Drop for ThunkList<'a, T> {
 }
 pub struct LPtr<'a, T>(Rc<MaybeNode<'a, T>>);
 impl<'a, T> LPtr<'a, T> {
-    fn new() -> Self 
-        where T: 'a
-    {
-        LPtr(Rc::new(Thunk::undef().boxed()))
+    fn new() -> Self {
+        LPtr(Rc::new(ThunkAny::undef()))
     }
 
     pub fn bind(self, l: &ThunkList<'a, T>) -> bool {
@@ -261,7 +246,7 @@ impl<'a, T> From<MaybeNode<'a, T>> for ThunkList<'a, T> {
 }
 impl<'a, T> From<Node<'a, T>> for ThunkList<'a, T> {
     fn from(value: Node<'a, T>) -> Self {
-        ThunkList::from(Thunk::known(Some(value)))
+        ThunkList::from(ThunkAny::of(Some(value)))
     }
 }
 pub struct Iter<'a, 'b, T>(Option<&'b MaybeNode<'a, T>>);
@@ -283,20 +268,20 @@ impl<'a, 'b, T> Iterator for Iter<'a, 'b, T> {
 mod tests {
     use std::rc::Rc;
 
-    use crate::Thunk;
+    use crate::ThunkAny;
 
     use super::ThunkList;
 
     fn take_n<'a, T>(t: &'a ThunkList<T>, n: usize) -> Vec<&'a T> {
         t.iter()
             .take(n)
-            .map(Thunk::force)
+            .map(ThunkAny::force)
             .collect()
     }
     fn take_nc<T: Clone>(t: &ThunkList<T>, n: usize) -> Vec<T> {
         t.iter()
             .take(n)
-            .map(Thunk::force)
+            .map(ThunkAny::force)
             .cloned()
             .collect()
     }
@@ -328,16 +313,16 @@ mod tests {
         let c = ThunkList::cons_known(2usize, ThunkList::cons_known(1usize, ThunkList::new()));
 
         let mut cit = c.iter();
-        assert_eq!(cit.next().map(Thunk::force), Some(&2));
-        assert_eq!(cit.next().map(Thunk::force), Some(&1));
-        assert_eq!(cit.next().map(Thunk::force), None);
+        assert_eq!(cit.next().map(ThunkAny::force), Some(&2));
+        assert_eq!(cit.next().map(ThunkAny::force), Some(&1));
+        assert_eq!(cit.next().map(ThunkAny::force), None);
     }
 
     #[test]
     fn cc() {
         {
             const N: usize = 13;
-            let lst = ThunkList::cons_cyclic(Thunk::of(N));
+            let lst = ThunkList::cons_cyclic(ThunkAny::of(N));
             let ptr = Rc::downgrade(lst.head.as_ref().unwrap());
     
             let first_ten = take_nc(&lst, 10);
@@ -350,7 +335,7 @@ mod tests {
         }
         
         {
-            let (next, lst2) = ThunkList::raw_cons(Thunk::of(0usize));
+            let (next, lst2) = ThunkList::raw_cons(ThunkAny::of(0usize));
             let ptr = Rc::downgrade(lst2.head.as_ref().unwrap());
     
             let lst = ThunkList::cons_known(3usize, 
@@ -399,5 +384,15 @@ mod tests {
         let lst = ThunkList::from_iter(0..10);
         println!("{:?}", lst.get_forced(1));
         println!("{:?}", lst.get_forced(5));
+    }
+
+    #[test]
+    fn lifetimes() {
+        let s = "str";
+        {
+            let t = String::from("hello");
+            let x = ThunkList::cons_known(s, ThunkList::cons_known(&t, ThunkList::new()));
+            std::mem::drop(t);
+        }
     }
 }
