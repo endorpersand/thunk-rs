@@ -12,10 +12,13 @@ pub(crate) union CovUnsafeCell<T, const T_SIZE: usize> {
 
 impl<T> CovUnsafeCell<T, {size_of::<T>()}> {
     pub fn new(t: T) -> Self {
-        CovUnsafeCell { value: ManuallyDrop::new(t) }
+        unsafe { CovUnsafeCell::new_unchecked(t) }
     }
 }
 impl<T, const T_SIZE: usize> CovUnsafeCell<T, T_SIZE> {
+    pub unsafe fn new_unchecked(t: T) -> Self {
+        CovUnsafeCell { value: ManuallyDrop::new(t) }
+    }
     /// SAFETY: Same requirements as UnsafeCell, with the additional requirement
     /// that any changes made using this pointer must maintain covariance.
     /// 
@@ -107,14 +110,15 @@ pub(crate) struct TakeCell<T, const OT_SIZE: usize> {
     inner: CovUnsafeCell<Option<T>, OT_SIZE>
 }
 impl<T> TakeCell<T, {size_of::<Option<T>>()}> {
-    pub fn new(t: T) -> Self {
-        TakeCell { inner: CovUnsafeCell::new(Some(t)) }
-    }
-    pub fn empty() -> Self {
-        TakeCell { inner: CovUnsafeCell::new(None) }
+    pub fn new(t: Option<T>) -> Self {
+        unsafe {TakeCell::new_unchecked(t) }
     }
 }
 impl<T, const OT_SIZE: usize> TakeCell<T, OT_SIZE> {
+    pub unsafe fn new_unchecked(t: Option<T>) -> Self {
+        TakeCell { inner: CovUnsafeCell::new_unchecked(t) }
+    }
+
     pub fn take(&self) -> Option<T> {
         // SAFETY: Covariance is maintained because taking can't
         // mutate a memory location with a lifetime dependent value
@@ -138,7 +142,7 @@ impl<T, F> CovLazyCell<T, F, { size_of::<Option<T>>() }, { size_of::<Option<F>>(
     where F: FnOnce() -> T
 {
     pub fn new(f: F) -> Self {
-        CovLazyCell { inner: CovOnceCell::new(), init: TakeCell::new(f) }
+        CovLazyCell { inner: CovOnceCell::new(), init: TakeCell::new(Some(f)) }
     }
 }
 impl<T, F, const OT_SIZE: usize, const OF_SIZE: usize> CovLazyCell<T, F, OT_SIZE, OF_SIZE> 
