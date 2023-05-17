@@ -126,7 +126,8 @@ impl<T, const OT_SIZE: usize> CovOnceCell<T, OT_SIZE> {
     /// T must match the original lifetime of the cell 
     /// in order to maintain covariance.
     pub unsafe fn get_or_init(&self, f: impl FnOnce() -> T) -> &T {
-        self.get_or_try_init(|| Ok::<_, Infallible>(f())).unwrap_unchecked()
+        self.get_or_try_init(|| Ok::<_, Infallible>(f()))
+            .unwrap_unchecked()
     }
 
     /// # Safety
@@ -137,7 +138,7 @@ impl<T, const OT_SIZE: usize> CovOnceCell<T, OT_SIZE> {
         match self.get() {
             Some(t) => Ok(t),
             None => {
-                self.set(f()?).ok().unwrap();
+                self.set(f()?).ok().expect("set operation should have succeeded");
                 Ok(self.get().unwrap())
             },
         }
@@ -159,6 +160,12 @@ impl<T: Debug, const OT_SIZE: usize> Debug for CovOnceCell<T, OT_SIZE> {
         }
     }
 }
+impl<T: PartialEq, const OT_SIZE: usize> PartialEq for CovOnceCell<T, OT_SIZE> {
+    fn eq(&self, other: &Self) -> bool {
+        self.get() == other.get()
+    }
+}
+impl<T: Eq, const OT_SIZE: usize> Eq for CovOnceCell<T, OT_SIZE> {}
 
 /// A cell which holds a value which can be taken at any time with a immutable reference.
 pub(crate) struct TakeCell<T, const OT_SIZE: usize> {

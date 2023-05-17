@@ -85,10 +85,7 @@ impl<T, F> ThunkInner<T, F> {
         ThunkInner { inner: OnceCell::new(), init: Cell::new(Some(f)) }
     }
     fn initialized(t: T) -> Self {
-        let inner = OnceCell::new();
-        let _ = inner.set(t);
-
-        ThunkInner { inner, init: Cell::new(None) }
+        ThunkInner { inner: OnceCell::from(t), init: Cell::new(None) }
     }
 
     fn force(&self, r: impl FnOnce(F) -> T) -> &T {
@@ -190,7 +187,9 @@ impl<F: Thunkable> Thunk<F> {
             let inner = CovOnceCell::new_unchecked(); // <-- not safe
             // SAFETY: lifetime matches lifetime on init
             if let Some(val) = self.inner.inner.into_inner() {
-                let _ = inner.set(val);
+                inner.set(val)
+                    .ok()
+                    .expect("CovOnceCell should not have been initialized");
             };
 
             let init = TakeCell::new_unchecked(
@@ -353,7 +352,9 @@ impl<'a, T> ThunkAny<'a, T> {
     pub fn of(t: T) -> Self {
         unsafe {
             let inner = CovOnceCell::new_unchecked(); // <-- safety not assured here
-            let _ = inner.set(t); // <-- same lifetime as inner, therefore safe
+            inner.set(t) // <-- same lifetime as inner, therefore safe
+                .ok()
+                .expect("CovOnceCell should not have been initialized");
 
             let init = TakeCell::new_unchecked(None);
 

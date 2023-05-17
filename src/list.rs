@@ -5,7 +5,8 @@ use crate::{Thunkable, ThunkAny};
 
 /// An Option<Node> thunk
 type MaybeNode<'a, T> = ThunkAny<'a, Option<Node<'a, T>>>;
-fn down<'a, 'b>(t: ThunkList<'static, &'static ()>) -> ThunkList<'a, &'b ()> { t }
+// fn down<'a, 'b>(t: ThunkList<'static, &'static ()>) -> ThunkList<'a, &'b ()> { t }
+
 #[derive(Debug)]
 struct Node<'a, T> {
     val: Rc<ThunkAny<'a, T>>,
@@ -127,8 +128,8 @@ impl<'a, T> ThunkList<'a, T> {
         lst.pushed(ThunkAny::of(t))
     }
 
-    pub fn raw_cons(f: ThunkAny<'a, T>) -> (LPtr<'a, T>, ThunkList<'a, T>) {
-        let next = LPtr::new();
+    pub fn raw_cons(f: ThunkAny<'a, T>) -> (TailPtr<'a, T>, ThunkList<'a, T>) {
+        let next = TailPtr::new();
         let node = Node::new(
             f,
             Rc::clone(&next.ptr)
@@ -198,8 +199,21 @@ impl<'a, T> ThunkList<'a, T> {
 
         ThunkList::from(iterate_node(f))
     }
-
-    pub fn from_iter<I: IntoIterator<Item=T> + 'a>(iter: I) -> ThunkList<'a, T> {
+    pub fn iterate_strict(mut f: impl FnMut() -> Option<ThunkAny<'a, T>>) -> ThunkList<'a, T> {
+        match f() {
+            Some(el) => {
+                let (mut next, lst) = ThunkList::raw_cons(el);
+                while let Some(el) = f() {
+                    let (next1, lst1) = ThunkList::raw_cons(el);
+                    next.bind(&lst1);
+                    next = next1;
+                }
+                lst
+            }
+            None => ThunkList::new()
+        }
+    }
+    pub fn from_iter_lazy<I: IntoIterator<Item=T> + 'a>(iter: I) -> ThunkList<'a, T> {
         let mut it = iter.into_iter();
         ThunkList::iterate_known(move || it.next())
     }
@@ -216,14 +230,14 @@ impl<'a, T> Drop for ThunkList<'a, T> {
         drop_maybe_node(self.head.take())
     }
 }
-pub struct LPtr<'a, T> {
+pub struct TailPtr<'a, T> {
     ptr: Rc<MaybeNode<'a, T>>,
     // Force invariance on 'a, T
-    _ghost: PhantomData<std::cell::UnsafeCell<Node<'a, T>>>
+    _ghost: PhantomData<*mut Node<'a, T>>
 }
-impl<'a, T> LPtr<'a, T> {
+impl<'a, T> TailPtr<'a, T> {
     fn new() -> Self {
-        LPtr {
+        TailPtr {
             ptr: Rc::new(ThunkAny::undef()),
             _ghost: PhantomData
         }
@@ -295,6 +309,18 @@ impl<'a, T> IntoIterator for ThunkList<'a, T> {
         IntoIter(Some(self))
     }
 }
+impl<'a, A> FromIterator<A> for ThunkList<'a, A> {
+    fn from_iter<T: IntoIterator<Item = A>>(iter: T) -> Self {
+        let mut it = iter.into_iter();
+        ThunkList::iterate_strict(move || it.next().map(ThunkAny::of))
+    }
+}
+impl<'a, A> FromIterator<ThunkAny<'a, A>> for ThunkList<'a, A> {
+    fn from_iter<T: IntoIterator<Item = ThunkAny<'a, A>>>(iter: T) -> Self {
+        let mut it = iter.into_iter();
+        ThunkList::iterate_strict(move || it.next())
+    }
+}
 
 #[allow(unused_macros)]
 macro_rules! list {
@@ -308,7 +334,7 @@ macro_rules! list {
 mod tests {
     use std::rc::Rc;
 
-    use crate::ThunkAny;
+    use crate::{ThunkAny, Thunkable};
 
     use super::ThunkList;
 
@@ -431,17 +457,19 @@ mod tests {
 
     #[test]
     fn lifetimes() {
-        // let s = "str";
-        // {
-        //     let t = String::from("hello");
-        //     let x = list!["str", &t];
-        //     std::mem::drop(t);
-        // }
+        let s = "str";
+        {
+            let t = String::from("hello");
+            let x = list!["str", &t];
+            std::mem::drop(x);
+            std::mem::drop(t);
+        }
+        println!("{s}");
     }
 
     #[test]
     fn raw_cons_lifetimes() {
-        let (ptr1, list1) = ThunkList::raw_cons(ThunkAny::of("hello"));
+        let (_ptr1, list1) = ThunkList::raw_cons(ThunkAny::of("hello"));
         {
             let a = String::from("hello");
             let (ptr2, list2) = ThunkList::raw_cons(ThunkAny::of(a.as_str()));
@@ -449,5 +477,26 @@ mod tests {
             std::mem::drop(list2);
         }
         std::mem::drop(list1);
+    }
+
+    #[test]
+    fn strict_collect() {
+        let list: ThunkList<usize> = (0..=15)
+            .map(|i| {
+                ThunkAny::of(i)
+                .inspect(|t| println!("initialized {t}"))
+                    .map(|t| t * 2)
+                    .into_thunk()
+                    .boxed()
+            })
+            .collect();
+
+        println!("{:?}", list.get(14).map(ThunkAny::force));
+        println!("{:?}", list.get(3).map(ThunkAny::force));
+        println!("{:?}", list.get(12).map(ThunkAny::force));
+        println!("{:?}", list.get(2).map(ThunkAny::force));
+        println!("{:?}", list.get(4).map(ThunkAny::force));
+        println!("{:?}", list.get(9).map(ThunkAny::force));
+        println!("{:?}", list.get(1).map(ThunkAny::force));
     }
 }
