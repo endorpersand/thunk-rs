@@ -283,8 +283,8 @@ impl<'a, T> Thunkable for ThunkBox<'a, T> {
     }
 }
 
-fn down<'a, 'b, const N: usize>(cell: &'b TakeCell<ThunkBox<'static, ()>, N>) -> &'b TakeCell<ThunkBox<'a, ()>, N> { cell }
-fn down2<'a, 'b, const N: usize>(cell: &'b ThunkAny<'static, ()>) -> &'b ThunkAny<'a, ()> { cell }
+fn down<'a, const N: usize>(cell: TakeCell<ThunkBox<'static, ()>, N>) -> TakeCell<ThunkBox<'a, ()>, N> { cell }
+fn down2<'a, const N: usize>(cell: ThunkAny<'static, ()>) -> ThunkAny<'a, ()> { cell }
 
 // #[derive(Clone)]
 pub struct ThunkAny<'a, T> {
