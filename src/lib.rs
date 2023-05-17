@@ -4,7 +4,7 @@ pub mod tuple;
 pub mod transform;
 pub mod list;
 mod cell;
-use cell::TakeCell;
+use cell::{TakeCell, CovOnceCell};
 pub use transform::zip;
 
 use std::cell::{OnceCell, Cell};
@@ -186,9 +186,20 @@ impl<F: Thunkable> Thunk<F> {
     pub fn boxed<'a>(self) -> ThunkAny<'a, F::Item>
         where F: 'a
     {
-        ThunkAny { 
-            inner: self.inner.inner, 
-            init: unsafe { TakeCell::new_unchecked(self.inner.init.into_inner().map(Thunkable::into_box)) }
+        unsafe {
+            let inner = CovOnceCell::new_unchecked(); // <-- not safe
+            // SAFETY: lifetime matches lifetime on init
+            if let Some(val) = self.inner.inner.into_inner() {
+                let _ = inner.set(val);
+            };
+
+            let init = TakeCell::new_unchecked(
+                self.inner.init
+                    .into_inner()
+                    .map(Thunkable::into_box)
+            );
+            
+            ThunkAny { inner, init }
         }
     }
 
@@ -323,7 +334,7 @@ fn down3<'a, 'b, const N: usize>(cell: ThunkBox<'static, &'static ()>) -> ThunkB
 
 // #[derive(Clone)]
 pub struct ThunkAny<'a, T> {
-    inner: OnceCell<T>,
+    inner: CovOnceCell<T, 128>, // this is invalid
     init: TakeCell<ThunkBox<'a, T>, 16>
 }
 impl<'a, T> ThunkAny<'a, T> {
@@ -331,18 +342,33 @@ impl<'a, T> ThunkAny<'a, T> {
         ThunkAny::new((|| panic!("undef")).into_box())
     }
     pub fn new(f: ThunkBox<'a, T>) -> Self {
-        ThunkAny { inner: OnceCell::new(), init: unsafe { TakeCell::new_unchecked(Some(f)) } }
+        unsafe {
+            ThunkAny { 
+                inner: CovOnceCell::new_unchecked(), // <-- safety not assured here
+                init: TakeCell::new_unchecked(Some(f))
+            }
+
+        }
     }
     pub fn of(t: T) -> Self {
-        let inner = OnceCell::new();
-        let _ = inner.set(t);
-        ThunkAny { inner, init: unsafe { TakeCell::new_unchecked(None) } }
+        unsafe {
+            let inner = CovOnceCell::new_unchecked(); // <-- safety not assured here
+            let _ = inner.set(t); // <-- same lifetime as inner, therefore safe
+
+            let init = TakeCell::new_unchecked(None);
+
+            ThunkAny { inner, init }
+        }
     }
     pub fn force(&self) -> &T {
-        self.inner.get_or_init(|| match self.init.take() {
-            Some(f) => f.resolve(),
-            None => panic!("no initializer")
-        })
+        // SAFETY: cov met because T, 
+        // ThunkBox have matching variances in initialization
+        unsafe {
+            self.inner.get_or_init(|| match self.init.take() {
+                Some(f) => f.resolve(),
+                None => panic!("no initializer")
+            })
+        }
     }
     pub fn force_mut(&mut self) -> &mut T {
         self.force();
@@ -353,7 +379,11 @@ impl<'a, T> ThunkAny<'a, T> {
         self.try_into_inner().expect("force should have succeeded")
     }
 
-    pub fn set(&self, val: T) -> Result<(), T> {
+    /// # Safety
+    /// 
+    /// This function has to meet covariance. Type `T`'s lifetime should
+    /// match the lifetime at initialization of this `ThunkAny`.
+    pub unsafe fn set(&self, val: T) -> Result<(), T> {
         self.inner.set(val)
     }
     pub fn is_initialized(&self) -> bool {

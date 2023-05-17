@@ -1,3 +1,4 @@
+use std::marker::PhantomData;
 use std::rc::Rc;
 
 use crate::{Thunkable, ThunkAny};
@@ -130,7 +131,7 @@ impl<'a, T> ThunkList<'a, T> {
         let next = LPtr::new();
         let node = Node::new(
             f,
-            Rc::clone(&next.0)
+            Rc::clone(&next.ptr)
         );
 
         (next, ThunkList::from(node))
@@ -215,10 +216,17 @@ impl<'a, T> Drop for ThunkList<'a, T> {
         drop_maybe_node(self.head.take())
     }
 }
-pub struct LPtr<'a, T>(Rc<MaybeNode<'a, T>>);
+pub struct LPtr<'a, T> {
+    ptr: Rc<MaybeNode<'a, T>>,
+    // Force invariance on 'a, T
+    _ghost: PhantomData<std::cell::UnsafeCell<Node<'a, T>>>
+}
 impl<'a, T> LPtr<'a, T> {
     fn new() -> Self {
-        LPtr(Rc::new(ThunkAny::undef()))
+        LPtr {
+            ptr: Rc::new(ThunkAny::undef()),
+            _ghost: PhantomData
+        }
     }
 
     pub fn bind(self, l: &ThunkList<'a, T>) -> bool {
@@ -226,7 +234,12 @@ impl<'a, T> LPtr<'a, T> {
             Some(t) => t.force().clone(),
             None => None,
         };
-        self.0.set(val).is_ok()
+
+        // SAFETY: LPtr is invariant over Node<'a, T>, 
+        // so only pointers of same lifetime are allowed.
+        unsafe {
+            self.ptr.set(val).is_ok()
+        }
     }
 }
 
@@ -418,11 +431,23 @@ mod tests {
 
     #[test]
     fn lifetimes() {
-        let s = "str";
+        // let s = "str";
+        // {
+        //     let t = String::from("hello");
+        //     let x = list!["str", &t];
+        //     std::mem::drop(t);
+        // }
+    }
+
+    #[test]
+    fn raw_cons_lifetimes() {
+        let (ptr1, list1) = ThunkList::raw_cons(ThunkAny::of("hello"));
         {
-            let t = String::from("hello");
-            let x = list![s, &t];
-            std::mem::drop(t);
+            let a = String::from("hello");
+            let (ptr2, list2) = ThunkList::raw_cons(ThunkAny::of(a.as_str()));
+            ptr2.bind(&list1);
+            std::mem::drop(list2);
         }
+        std::mem::drop(list1);
     }
 }
