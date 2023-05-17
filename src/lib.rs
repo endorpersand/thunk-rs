@@ -8,6 +8,9 @@ use cell::TakeCell;
 pub use transform::zip;
 
 use std::cell::{OnceCell, Cell};
+use std::marker::PhantomData;
+use std::mem::ManuallyDrop;
+use std::ptr::NonNull;
 
 pub trait Thunkable {
     type Item;
@@ -261,11 +264,29 @@ impl<F: Thunkable> ThunkDrop for Option<F> {
 /// 
 /// This type still internally uses a `dyn Trait`, so the same warnings about `dyn Trait`
 /// apply when considering using this type.
-pub struct ThunkBox<'a, T>(Box<dyn ThunkDrop<Item=T> + 'a>);
+pub struct ThunkBox<'a, T>(NonNull<dyn ThunkDrop<Item=()> + 'a>, PhantomData<&'a T>);
 
 impl<'a, T> ThunkBox<'a, T> {
     fn new<F: Thunkable<Item=T> + 'a>(f: F) -> Self {
-        ThunkBox(Box::new(Some(f)))
+        let ptr = unsafe {
+            let p = Box::into_raw(Box::new(Some(f)))
+                as *mut dyn ThunkDrop<Item=T>
+                as *mut dyn ThunkDrop<Item=()>;
+
+            // SAFETY: ptr came from Box, cannot be null
+            NonNull::new_unchecked(p)
+        };
+        
+        ThunkBox(ptr, PhantomData)
+    }
+
+    /// # Safety
+    /// 
+    /// ptr should not be used afterwards
+    #[allow(clippy::wrong_self_convention)]
+    unsafe fn to_tdbox(&mut self) -> Box<dyn ThunkDrop<Item=T> + 'a> {
+        // SAFETY: ptr came from Box during initialization
+        unsafe { Box::from_raw(self.0.as_ptr() as *mut dyn ThunkDrop<Item=T>) }
     }
     fn into_thunk_a(self) -> ThunkAny<'a, T> {
         ThunkAny::new(self)
@@ -274,17 +295,31 @@ impl<'a, T> ThunkBox<'a, T> {
 impl<'a, T> Thunkable for ThunkBox<'a, T> {
     type Item = T;
 
-    fn resolve(mut self) -> Self::Item {
-        self.0.drop_resolve()
+    fn resolve(self) -> Self::Item {
+        // SAFETY: ManuallyDrop => destructor not called, so this is last action
+        unsafe {
+            ManuallyDrop::new(self)
+                .to_tdbox()
+                .drop_resolve()
+        }
     }
     fn into_box<'b>(self) -> ThunkBox<'b, Self::Item> 
             where Self: 'b {
         self
     }
 }
+impl<'a, T> Drop for ThunkBox<'a, T> {
+    fn drop(&mut self) {
+        // SAFETY: Nothing happens after drop.
+        unsafe {
+            let _ = self.to_tdbox();
+        }
+    }
+}
 
 fn down<'a, const N: usize>(cell: TakeCell<ThunkBox<'static, ()>, N>) -> TakeCell<ThunkBox<'a, ()>, N> { cell }
-fn down2<'a, const N: usize>(cell: ThunkAny<'static, ()>) -> ThunkAny<'a, ()> { cell }
+fn down2<'a, const N: usize>(cell: ThunkBox<'static, ()>) -> ThunkBox<'a, ()> { cell }
+fn down3<'a, 'b, const N: usize>(cell: ThunkBox<'static, &'static ()>) -> ThunkBox<'a, &'b ()> { cell }
 
 // #[derive(Clone)]
 pub struct ThunkAny<'a, T> {
