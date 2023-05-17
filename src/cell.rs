@@ -2,6 +2,7 @@
 
 use std::cell::UnsafeCell;
 use std::convert::Infallible;
+use std::fmt::Debug;
 use std::mem::{ManuallyDrop, size_of};
 
 #[repr(C)]
@@ -61,6 +62,12 @@ impl<T, const T_SIZE: usize> CovUnsafeCell<T, T_SIZE> {
     }
     pub fn raw_get(this: *const Self) -> *mut T {
         UnsafeCell::raw_get(this as *const UnsafeCell<[u8; T_SIZE]>) as *mut T
+    }
+}
+impl<T, const T_SIZE: usize> Debug for CovUnsafeCell<T, T_SIZE> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("CovUnsafeCell")
+            .finish_non_exhaustive()
     }
 }
 impl<T, const T_SIZE: usize> Drop for CovUnsafeCell<T, T_SIZE> {
@@ -142,6 +149,14 @@ impl<T, const OT_SIZE: usize> CovOnceCell<T, OT_SIZE> {
 
     pub fn take(&mut self) -> Option<T> {
         self.inner.get_mut().take()
+    }
+}
+impl<T: Debug, const OT_SIZE: usize> Debug for CovOnceCell<T, OT_SIZE> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self.get() {
+            Some(t) => f.debug_tuple("CovOnceCell").field(t).finish(),
+            None => write!(f, "CovOnceCell(?)"),
+        }
     }
 }
 
