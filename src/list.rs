@@ -5,7 +5,7 @@ use crate::{Thunkable, ThunkAny};
 
 /// An Option<Node> thunk
 type MaybeNode<'a, T> = ThunkAny<'a, Option<Node<'a, T>>>;
-
+fn down<'a, 'b>(t: ThunkList<'static, &'static ()>) -> ThunkList<'a, &'b ()> { t }
 #[derive(Debug)]
 struct Node<'a, T> {
     val: Rc<ThunkAny<'a, T>>,
@@ -166,14 +166,14 @@ impl<'a, T> ThunkList<'a, T> {
 
         Some((val, ThunkList { head: next }))
     }
-    pub fn iter(&self) -> Iter<'a, '_, T> {
+    pub fn iter(&self) -> Iter<T> {
         Iter(self.head.as_deref())
     }
-    pub fn get(&self, n: usize) -> Option<&ThunkAny<'a, T>> {
+    pub fn get(&self, n: usize) -> Option<&ThunkAny<T>> {
         self.iter().nth(n)
     }
     pub fn get_forced(&self, n: usize) -> Option<&T> {
-        self.iter().nth(n).map(ThunkAny::force)
+        self.get(n).map(ThunkAny::force)
     }
     pub fn len(&self) -> usize {
         self.iter().count()
@@ -263,9 +263,9 @@ impl<'a, T> From<Node<'a, T>> for ThunkList<'a, T> {
         ThunkList::from(ThunkAny::of(Some(value)))
     }
 }
-pub struct Iter<'a, 'b, T>(Option<&'b MaybeNode<'a, T>>);
-impl<'a, 'b, T> Iterator for Iter<'a, 'b, T> {
-    type Item = &'b ThunkAny<'a, T>;
+pub struct Iter<'r, T>(Option<&'r MaybeNode<'r, T>>);
+impl<'r, T> Iterator for Iter<'r, T> {
+    type Item = &'r ThunkAny<'r, T>;
 
     fn next(&mut self) -> Option<Self::Item> {
         let node = self.0?.force().as_ref()?;
