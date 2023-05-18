@@ -1,5 +1,3 @@
-#![feature(generic_const_exprs)]
-
 pub mod tuple;
 pub mod transform;
 pub mod list;
@@ -111,12 +109,6 @@ impl<T, F> ThunkInner<T, F> {
     fn is_initialized(&self) -> bool {
         self.inner.get().is_some()
     }
-    fn map<G>(self, m: impl FnOnce(F) -> G) -> ThunkInner<T, G> {
-        ThunkInner {
-            inner: self.inner,
-            init: Cell::new(self.init.into_inner().map(m))
-        }
-    }
 }
 
 impl<T: Clone, F: Clone> Clone for ThunkInner<T, F> {
@@ -183,23 +175,23 @@ impl<F: Thunkable> Thunk<F> {
     pub fn boxed<'a>(self) -> ThunkAny<'a, F::Item>
         where F: 'a
     {
-        unsafe {
-            let inner = CovOnceCell::new_unchecked(); // <-- not safe
-            // SAFETY: lifetime matches lifetime on init
-            if let Some(val) = self.inner.inner.into_inner() {
+        let inner = CovOnceCell::new();
+        // SAFETY: lifetime matches lifetime on init
+        if let Some(val) = self.inner.inner.into_inner() {
+            unsafe {
                 inner.set(val)
                     .ok()
                     .expect("CovOnceCell should not have been initialized");
-            };
+            }
+        };
 
-            let init = TakeCell::new_unchecked(
+            let init = TakeCell::new(
                 self.inner.init
                     .into_inner()
                     .map(Thunkable::into_box)
             );
             
             ThunkAny { inner, init }
-        }
     }
 
     pub fn try_get(&self) -> Option<&F::Item> {
@@ -327,13 +319,9 @@ impl<'a, T> Drop for ThunkBox<'a, T> {
     }
 }
 
-fn down<'a, const N: usize>(cell: TakeCell<ThunkBox<'static, ()>, N>) -> TakeCell<ThunkBox<'a, ()>, N> { cell }
-fn down2<'a, const N: usize>(cell: ThunkBox<'static, ()>) -> ThunkBox<'a, ()> { cell }
-fn down3<'a, 'b, const N: usize>(cell: ThunkBox<'static, &'static ()>) -> ThunkBox<'a, &'b ()> { cell }
-
 // #[derive(Clone)]
 pub struct ThunkAny<'a, T> {
-    inner: CovOnceCell<T, 128>, // this is invalid
+    inner: CovOnceCell<T, 32>, // this is invalid
     init: TakeCell<ThunkBox<'a, T>, 16>
 }
 impl<'a, T> ThunkAny<'a, T> {
@@ -341,25 +329,21 @@ impl<'a, T> ThunkAny<'a, T> {
         ThunkAny::new((|| panic!("undef")).into_box())
     }
     pub fn new(f: ThunkBox<'a, T>) -> Self {
-        unsafe {
-            ThunkAny { 
-                inner: CovOnceCell::new_unchecked(), // <-- safety not assured here
-                init: TakeCell::new_unchecked(Some(f))
-            }
-
+        ThunkAny { 
+            inner: CovOnceCell::new(),
+            init: TakeCell::new(Some(f))
         }
     }
     pub fn of(t: T) -> Self {
+        let inner = CovOnceCell::new();
         unsafe {
-            let inner = CovOnceCell::new_unchecked(); // <-- safety not assured here
             inner.set(t) // <-- same lifetime as inner, therefore safe
                 .ok()
                 .expect("CovOnceCell should not have been initialized");
-
-            let init = TakeCell::new_unchecked(None);
-
-            ThunkAny { inner, init }
         }
+        let init = TakeCell::new(None);
+
+        ThunkAny { inner, init }
     }
     pub fn force(&self) -> &T {
         // SAFETY: cov met because T, 

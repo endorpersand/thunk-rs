@@ -5,25 +5,20 @@ use std::convert::Infallible;
 use std::fmt::Debug;
 use std::mem::{ManuallyDrop, size_of};
 
+/// Covariant version of UnsafeCell.
 #[repr(C)]
 pub(crate) union CovUnsafeCell<T, const T_SIZE: usize> {
     cell: ManuallyDrop<UnsafeCell<[u8; T_SIZE]>>,
     value: ManuallyDrop<T>
 }
 
-/// Covariant version of UnsafeCell.
-impl<T> CovUnsafeCell<T, {size_of::<T>()}> {
-    pub fn new(t: T) -> Self {
-        // SAFETY: T_SIZE == size_of::<T>()
-        unsafe { CovUnsafeCell::new_unchecked(t) }
-    }
-}
 impl<T, const T_SIZE: usize> CovUnsafeCell<T, T_SIZE> {
-    /// # Safety
+    /// # Panics
     /// 
-    /// When initialized, the `T_SIZE` parameter must at least meet `size_of::<T>()`
-    /// in order for the `*mut T` pointer obtained from `.get` to be allowed.
-    pub unsafe fn new_unchecked(t: T) -> Self {
+    /// Panics if `T_SIZE` < `size_of::<T>()`.
+    /// This is necessary in order for the `*mut T` pointer from `.get` to safely
+    /// access the stored value `T`.
+    pub fn new(t: T) -> Self {
         assert!(
             T_SIZE >= size_of::<T>(), 
             "cell needed {} bytes for safe access, but it only got {T_SIZE} bytes",
@@ -83,19 +78,13 @@ impl<T, const T_SIZE: usize> Drop for CovUnsafeCell<T, T_SIZE> {
 pub(crate) struct CovOnceCell<T, const OT_SIZE: usize> {
     inner: CovUnsafeCell<Option<T>, OT_SIZE>
 }
-impl<T> CovOnceCell<T, {size_of::<Option<T>>()}> {
-    pub fn new() -> Self {
-        // SAFETY: OT_SIZE == size_of::<Option<T>>()
-        unsafe { CovOnceCell::new_unchecked() }
-    }
-}
 impl<T, const OT_SIZE: usize> CovOnceCell<T, OT_SIZE> {
-    /// # Safety
+    /// # Panics
     /// 
-    /// When initialized, the `OT_SIZE` parameter must at least meet `size_of::<Option<T>>()`
-    /// in order for this cell's operations to be valid.
-    pub unsafe fn new_unchecked() -> Self {
-        CovOnceCell { inner: CovUnsafeCell::new_unchecked(None) }
+    /// Panics if `OT_SIZE` < `size_of::<Option<T>>()`.
+    /// This is necessary in order for this cell's operations to be valid.
+    pub fn new() -> Self {
+        CovOnceCell { inner: CovUnsafeCell::new(None) }
     }
     pub fn get(&self) -> Option<&T> {
         // SAFETY: See OnceCell
@@ -171,18 +160,13 @@ impl<T: Eq, const OT_SIZE: usize> Eq for CovOnceCell<T, OT_SIZE> {}
 pub(crate) struct TakeCell<T, const OT_SIZE: usize> {
     inner: CovUnsafeCell<Option<T>, OT_SIZE>
 }
-impl<T> TakeCell<T, {size_of::<Option<T>>()}> {
-    pub fn new(t: Option<T>) -> Self {
-        unsafe {TakeCell::new_unchecked(t) }
-    }
-}
 impl<T, const OT_SIZE: usize> TakeCell<T, OT_SIZE> {
-    /// # Safety
+    /// # Panics
     /// 
-    /// When initialized, the `OT_SIZE` parameter must at least meet `size_of::<Option<T>>()`
-    /// in order for this cell's operation to be valid.
-    pub unsafe fn new_unchecked(t: Option<T>) -> Self {
-        TakeCell { inner: CovUnsafeCell::new_unchecked(t) }
+    /// Panics if `OT_SIZE` < `size_of::<Option<T>>()`.
+    /// This is necessary in order for this cell's operations to be valid.
+    pub fn new(t: Option<T>) -> Self {
+        TakeCell { inner: CovUnsafeCell::new(t) }
     }
 
     pub fn take(&self) -> Option<T> {
@@ -205,24 +189,16 @@ pub(crate) struct CovLazyCell<T, F, const OT_SIZE: usize, const OF_SIZE: usize> 
     inner: CovOnceCell<T, OT_SIZE>,
     init: TakeCell<F, OF_SIZE>
 }
-impl<T, F> CovLazyCell<T, F, { size_of::<Option<T>>() }, { size_of::<Option<F>>() }> 
-    where F: FnOnce() -> T
-{
-    pub fn new(f: F) -> Self {
-        // SAFETY: OT_SIZE == size_of::<Option<T>>(), OF_SIZE == size_of::<Option<F>>()
-        unsafe { CovLazyCell::new_unchecked(f) }
-    }
-}
+
 impl<T, F, const OT_SIZE: usize, const OF_SIZE: usize> CovLazyCell<T, F, OT_SIZE, OF_SIZE> 
     where F: FnOnce() -> T
 {
-    /// # Safety
+    /// # Panics
     /// 
-    /// When initialized, the `OT_SIZE` parameter must at least meet `size_of::<Option<T>>()`,
-    /// and `OF_SIZE` parameter must at least meet `size_of::<Option<F>>()`.
-    /// in order for this cell's operation to be valid.
-    pub unsafe fn new_unchecked(f: F) -> Self {
-        CovLazyCell { inner: CovOnceCell::new_unchecked(), init: TakeCell::new_unchecked(Some(f)) }
+    /// Panics if `OT_SIZE` < `size_of::<Option<T>>()` or `OF_SIZE` < `size_of::<Option<F>>()`.
+    /// This is necessary in order for this cell's operations to be valid.
+    pub fn new(f: F) -> Self {
+        CovLazyCell { inner: CovOnceCell::new(), init: TakeCell::new(Some(f)) }
     }
 
     pub fn force(&self) -> &T {
@@ -240,8 +216,9 @@ impl<T, F, const OT_SIZE: usize, const OF_SIZE: usize> CovLazyCell<T, F, OT_SIZE
 #[cfg(test)]
 mod tests {
     use std::marker::PhantomData;
+    use std::mem::size_of;
 
-    use super::{CovUnsafeCell, CovLazyCell};
+    use super::CovUnsafeCell;
     
     #[derive(PartialEq, Eq, Debug)]
     struct Foo(usize);
@@ -251,18 +228,9 @@ mod tests {
     #[test]
     fn is_miri_happy() {
         unsafe {
-            let z = CovUnsafeCell::new(Foo(0));
+            let z = CovUnsafeCell::<Foo, { size_of::<Foo>() }>::new(Foo(0));
             z.get().write(Foo(15));
             assert_eq!(*z.get(), Foo(15));
-        }
-
-        {
-            let lazy = CovLazyCell::new(|| Fool(0, PhantomData));
-            {
-                let lazy2 = &lazy;
-                println!("{:?}", CovLazyCell::force(lazy2));
-            }
-            CovLazyCell::force(&lazy);
         }
     }
 
