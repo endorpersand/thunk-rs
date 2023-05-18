@@ -22,6 +22,10 @@ impl<'a, T> Node<'a, T> {
             next: Some(next),
         }
     }
+
+    fn split(mut self) -> (Rc<ThunkAny<'a, T>>, Mzrc<MaybeNode<'a, T>>) {
+        (Rc::clone(&self.val), self.next.take())
+    }
 }
 
 impl<T> Clone for Node<'_, T> {
@@ -137,14 +141,6 @@ impl<'a, T> ThunkList<'a, T> {
 
         (next, ThunkList::from(node))
     }
-
-    pub fn cons_cyclic(f: ThunkAny<'a, T>) -> ThunkList<'a, T> {
-        let (next, lst) = ThunkList::raw_cons(f);
-        next.bind(&lst);
-        
-        lst
-    }
-
     fn pushed(mut self, f: ThunkAny<'a, T>) -> ThunkList<'a, T> {
         let node = Node {
             val: Rc::new(f),
@@ -154,18 +150,71 @@ impl<'a, T> ThunkList<'a, T> {
         ThunkList::from(node)
     }
 
+    pub fn first(&self) -> Option<&ThunkAny<T>> {
+        self.iter().next()
+    }
+    pub fn last(&self) -> Option<&ThunkAny<T>> {
+        self.iter().last()
+    }
+
+    pub fn reverse(self) -> ThunkList<'a, T> {
+        let mut lst = self;
+        let mut rev = None;
+
+        while let Some((el, rest)) = lst.split_first() {
+            lst = rest;
+            
+            let node = Node {val: el, next: rev.take() };
+            rev.replace(Rc::new(ThunkAny::of(Some(node))));
+        }
+        
+        ThunkList { head: rev }
+    }
+    pub fn repeat(f: ThunkAny<'a, T>) -> ThunkList<'a, T> {
+        let (next, lst) = ThunkList::raw_cons(f);
+        next.bind(&lst);
+        
+        lst
+    }
     pub fn split_first(mut self) -> Option<(Rc<ThunkAny<'a, T>>, ThunkList<'a, T>)> {
         let node = match Rc::try_unwrap(self.head.take()?) {
             Ok(t) => t.dethunk(),
             Err(e) => e.force().clone(),
         }?;
 
-        let Node { ref val, ref next } = node;
-        let val = Rc::clone(val);
-        let next = next.clone();
-        std::mem::drop(node);
-
+        let (val, next) = node.split();
         Some((val, ThunkList { head: next }))
+    }
+    pub fn foldr<U, F>(mut self, f: F, base: ThunkAny<'a, U>) -> ThunkAny<'a, U> 
+        where F: for<'f> FnMut(Rc<ThunkAny<'f, T>>, ThunkAny<'f, U>) -> U + 'a
+    {
+        fn foldr_node<'a, T, U, F>(mzrc: Mzrc<MaybeNode<'a, T>>, mut f: F, base: ThunkAny<'a, U>) -> ThunkAny<'a, U>
+            where F: for<'f> FnMut(Rc<ThunkAny<'f, T>>, ThunkAny<'f, U>) -> U + 'a
+        {
+            match mzrc {
+                Some(rc) => {
+                    let node = match Rc::try_unwrap(rc) {
+                        Ok(t) => t,
+                        Err(e) => ThunkAny::of(e.force().clone()),
+                    };
+
+                    node.and_then(|inner| match inner {
+                        Some(node) => {
+                            let (el, next) = node.clone().split();
+                            let base = f(el, base);
+
+                            foldr_node(next, f, ThunkAny::of(base))
+                        },
+                        None => base,
+                    })
+                    .into_thunk()
+                    .boxed()
+                },
+                None => base,
+            }
+        }
+
+        foldr_node(self.head.take(), f, base)
     }
     pub fn iter(&self) -> Iter<T> {
         Iter(self.head.as_deref())
@@ -208,6 +257,8 @@ impl<'a, T> ThunkList<'a, T> {
                     next.bind(&lst1);
                     next = next1;
                 }
+                next.bind(&ThunkList::new());
+
                 lst
             }
             None => ThunkList::new()
@@ -395,7 +446,7 @@ mod tests {
     fn cc() {
         {
             const N: usize = 13;
-            let lst = ThunkList::cons_cyclic(ThunkAny::of(N));
+            let lst = ThunkList::repeat(ThunkAny::of(N));
             let ptr = Rc::downgrade(lst.head.as_ref().unwrap());
     
             let first_ten = take_nc(&lst, 10);
@@ -498,5 +549,22 @@ mod tests {
         println!("{:?}", list.get(4).map(ThunkAny::force));
         println!("{:?}", list.get(9).map(ThunkAny::force));
         println!("{:?}", list.get(1).map(ThunkAny::force));
+    }
+
+    #[test]
+    fn foldr_test() {
+        let superand: ThunkList<bool> = (1..=100)
+            .map(|i| {
+                ThunkAny::of(i)
+                    .inspect(|t| println!("initialized {t}"))
+                    .map(|t| t % 29 != 0)
+                    .into_thunk()
+                    .boxed()
+            })
+            .collect();
+
+        let foldy = superand
+            .foldr(|t, u| u.dethunk() && *t.force(), ThunkAny::of(true));
+        println!("{:?}", foldy.force());
     }
 }
