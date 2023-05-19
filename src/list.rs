@@ -496,12 +496,18 @@ impl<'a, A> FromIterator<ThunkAny<'a, A>> for ThunkList<'a, A> {
         ThunkList::iterate_strict(move || it.next())
     }
 }
-
-#[allow(unused_macros)]
-macro_rules! list {
-    () => { $crate::list::ThunkList::new() };
-    (; $l:expr$(,)?) => { $l };
-    ($h:expr$(, $($e:expr),*)?$(; $l:expr)?$(,)?) => { $crate::list::ThunkList::cons_known($h, list![$($($e),*)?$(; $l)?]) }
+impl<T, const N: usize> From<[T; N]> for ThunkList<'_, T> {
+    fn from(value: [T; N]) -> Self {
+        ThunkList::from_iter(value)
+    }
+}
+impl<'a, T, const N: usize> From<([T; N], ThunkList<'a, T>)> for ThunkList<'a, T> {
+    fn from(value: ([T; N], ThunkList<'a, T>)) -> Self {
+        let (left, right) = value;
+        
+        left.into_iter()
+            .rfold(right, |acc, cv| ThunkList::cons_known(cv, acc))
+    }
 }
 
 #[cfg(test)]
@@ -549,7 +555,7 @@ mod tests {
     }
     #[test]
     fn list_to_iter() {
-        let c = list![2usize, 1, 0];
+        let c = ThunkList::from([2usize, 1, 0]);
 
         let mut cit = c.iter();
         assert_eq!(cit.next().map(ThunkAny::force), Some(&2));
@@ -590,7 +596,7 @@ mod tests {
             let (next, lst2) = ThunkList::raw_cons(ThunkAny::of(0usize));
             let ptr = Rc::downgrade(lst2.head.as_rc().unwrap());
     
-            let lst = list![3, 2, 1; lst2.clone()];
+            let lst = ThunkList::from(([3, 2, 1], lst2.clone()));
             next.bind(&lst);
             
             let first_ten = take_nc(&lst, 10);
@@ -632,7 +638,7 @@ mod tests {
         let s = "str";
         {
             let t = String::from("hello");
-            let x = list!["str", &t];
+            let x = ThunkList::from(["str", &t]);
             std::mem::drop(x);
             std::mem::drop(t);
         }
@@ -713,7 +719,7 @@ mod tests {
     #[test]
     fn raw_append_test() {
         let mut list: ThunkList<usize> = (1..=15).collect();
-        list = list.append(list![16, 17, 18]);
+        list = list.append(ThunkList::from([16, 17, 18]));
 
         assert!(list.iter_strict().copied().eq(1..=18), "{list:?} != {:?}", 1..=18);
     }
