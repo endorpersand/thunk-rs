@@ -514,6 +514,17 @@ impl<T: PartialEq> PartialEq for ThunkList<'_, T> {
 }
 impl<T: Eq> Eq for ThunkList<'_, T> {}
 
+impl<T: PartialOrd> PartialOrd for ThunkList<'_, T> {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        self.iter().partial_cmp(other.iter())
+    }
+}
+impl<T: Ord> Ord for ThunkList<'_, T> {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        self.iter().cmp(other.iter())
+    }
+}
+
 pub struct Iter<'r, T>(&'r NodePtr<'r, T>);
 impl<'r, T> Iterator for Iter<'r, T> {
     type Item = &'r ThunkAny<'r, T>;
