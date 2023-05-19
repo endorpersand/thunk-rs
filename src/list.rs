@@ -699,8 +699,8 @@ mod tests {
                 .iter_strict()
                 .copied()
                 .eq(1..=100)
-        });
-        
+        }, "{list2:?} != {:?}", 1..=100);
+
         let list3: ThunkList<usize> = ThunkList::repeat(ThunkAny::of(0));
         let list4 = list3.foldr(
             |acc, cv| ThunkList::cons_lazy(acc.unwrap_or_clone(), cv), 
@@ -715,23 +715,24 @@ mod tests {
         let mut list: ThunkList<usize> = (1..=15).collect();
         list = list.append(list![16, 17, 18]);
 
-        println!("{:?}", list);
+        assert!(list.iter_strict().copied().eq(1..=18), "{list:?} != {:?}", 1..=18);
     }
 
     #[test]
     fn split_test() {
         let list: ThunkList<usize> = (1..=15).collect();
         let (left, right) = list.split_at(4);
-        println!("{:?}", left);
-        println!("{:?}", right);
+        assert!(left.iter_strict().copied().eq(1..=4), "{left:?} != {:?}", 1..=4);
+        assert!(right.iter_strict().copied().eq(5..=15), "{right:?} != {:?}", 5..=15);
 
         let list: ThunkList<usize> = (1..=15).collect();
         let list = list.insert(4, ThunkAny::of(100));
-        println!("{:?}", list);
+        assert_eq!(take_nc(&list, 16), [1, 2, 3, 4, 100, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]);
 
         let list = ThunkList::repeat(ThunkAny::of(0));
         let list = list.insert(10, ThunkAny::of(1));
-        let list2 = take_nc(&list, 25);
-        println!("{:?}", list2);
+        assert_eq!(take_nc(&list, 25), 
+            [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+        );
     }
 }
