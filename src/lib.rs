@@ -290,7 +290,7 @@ impl<'a, T> ThunkBox<'a, T> {
         // SAFETY: ptr came from Box during initialization
         unsafe { Box::from_raw(self.0.as_ptr() as *mut dyn ThunkDrop<Item=T>) }
     }
-    fn into_thunk_a(self) -> ThunkAny<'a, T> {
+    fn into_thunk_any(self) -> ThunkAny<'a, T> {
         ThunkAny::new(self)
     }
 }
@@ -389,7 +389,7 @@ impl<'a, T: Clone> ThunkAny<'a, T> {
     pub fn unwrap_or_clone(self: std::rc::Rc<Self>) -> Self {
         match std::rc::Rc::try_unwrap(self) {
             Ok(t) => t,
-            Err(e) => ThunkBox::new(move || e.force().clone()).into_thunk_a(),
+            Err(e) => ThunkBox::new(move || e.force().clone()).into_thunk_any(),
         }
     }
 }

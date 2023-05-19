@@ -179,7 +179,7 @@ impl<'a, T> ThunkList<'a, T> {
             next: NodePtr::from({
                     crate::ThunkBox::new(|| {
                     this.resolve().head.force().cloned()
-                }).into_thunk_a()
+                }).into_thunk_any()
             }),
         };
 
@@ -207,7 +207,7 @@ impl<'a, T> ThunkList<'a, T> {
                             NodePtr::from(
                                 crate::ThunkBox::new(move || {
                                     Some(Node { val, next: insert_end(next, end)})
-                                }).into_thunk_a()
+                                }).into_thunk_any()
                             )
                         },
                         None => end,
@@ -318,7 +318,7 @@ impl<'a, T> ThunkList<'a, T> {
                             },
                             None => base.dethunk()
                         }
-                    }).into_thunk_a()
+                    }).into_thunk_any()
                 },
                 None => base,
             }
@@ -360,7 +360,7 @@ impl<'a, T> ThunkList<'a, T> {
                     val: Rc::new(f()?),
                     next: NodePtr::from(iterate_node(f))
                 })
-            }).into_thunk_a()
+            }).into_thunk_any()
         }
 
         ThunkList { head: NodePtr::from(iterate_node(f)) }
@@ -658,7 +658,7 @@ mod tests {
                 crate::ThunkBox::new(move || {
                     println!("initialized {i}");
                     i * 2
-                }).into_thunk_a()
+                }).into_thunk_any()
             })
             .collect();
 
@@ -678,7 +678,7 @@ mod tests {
                 crate::ThunkBox::new(move || {
                     println!("initialized {i}");
                     i % 29 != 0
-                }).into_thunk_a()
+                }).into_thunk_any()
             })
             .collect();
 
