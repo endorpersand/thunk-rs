@@ -385,6 +385,14 @@ impl<'a, T> ThunkAny<'a, T> {
         self.inner.into_inner()
     }
 }
+impl<'a, T: Clone> ThunkAny<'a, T> {
+    pub fn unwrap_or_clone(self: std::rc::Rc<Self>) -> Self {
+        match std::rc::Rc::try_unwrap(self) {
+            Ok(t) => t,
+            Err(e) => ThunkBox::new(move || e.force().clone()).into_thunk_a(),
+        }
+    }
+}
 impl<'a, T> Thunkable for ThunkAny<'a, T> {
     type Item = T;
 
