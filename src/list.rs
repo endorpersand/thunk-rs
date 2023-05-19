@@ -4,6 +4,47 @@ use std::rc::Rc;
 
 use crate::{Thunkable, ThunkAny};
 
+/// Checks if the given `Rc<T>` points to a reference cycle of `Rc<T>`s.
+/// The `f` callback indicates how to access the next `Rc<T>` in the sequence.
+/// 
+/// If this function does find a cycle, it points to an `Rc<T>` in the cycle.
+/// Otherwise, this function returns None.
+fn find_cycle<T>(start: Rc<T>, mut f: impl FnMut(&T) -> Option<&Rc<T>>) -> Option<*const T> {
+    let weak = Rc::downgrade(&start);
+    std::mem::drop(start);
+
+    if weak.strong_count() == 0 { return None; }
+    let start = weak.as_ptr();
+
+    // SAFETY: strong count >= 1
+    let mut tort = f(unsafe { &*start })?;
+    let mut hare = f(tort)?;
+
+    while !Rc::ptr_eq(tort, hare) {
+        tort = f(tort)?;
+        hare = f(hare)?;
+        hare = f(hare)?;
+    }
+    
+    Some(Rc::as_ptr(tort))
+}
+/// Checks if the given `Rc<T>` points to an *isolated* reference cycle of `Rc<T>`s
+/// (i.e., no other `Rc<T>` directly points into this reference cycle).
+/// The `f` callback indicates how to access the next `Rc<T>` in the sequence.
+/// 
+/// If this function does find a isolated cycle, it points to an `Rc<T>` in the cycle.
+/// Otherwise, this function returns None.
+/// 
+/// If a cycle *is* found, every `Rc<T>` within the cycle is known to have 1 reference exactly.
+fn find_isolated_cycle<T>(start: Rc<T>, mut f: impl FnMut(&T) -> Option<&Rc<T>>) -> Option<*const T> {
+    find_cycle(start, |t| f(t).filter(|rc| Rc::strong_count(rc) == 1))
+}
+
+struct Rho<'a, T> {
+    flat: Vec<Rc<ThunkAny<'a, T>>>, 
+    cycled: Vec<Rc<ThunkAny<'a, T>>>
+}
+
 /// An Option<Node> thunk
 type MaybeNode<'a, T> = ThunkAny<'a, Option<Node<'a, T>>>;
 // fn down<'a, 'b>(t: ThunkList<'static, &'static ()>) -> ThunkList<'a, &'b ()> { t }
@@ -74,21 +115,22 @@ impl<'a, T> Drop for NodePtr<'a, T> {
                         head = inner.next.take_inner();
                     }
                 },
-                Err(rc) => unsafe {
-                    // This Rc has at least two references.
+                Err(rc) => {
                     // We want to check if it has multiple references because it's part of shared data
                     // or because it's part of an isolated ref cycle.
                     if let Some(start) = find_isolated_cycle(rc, |t| t.try_get()?.as_ref()?.next.as_rc()) {
-                        // Break cycle by dereferencing Rc ptr and using it to pop Node's .next.
-                        // This is okay because only one Node points to this ptr,
-                        // and that Node should not access/mutate the ptr before it's destroyed.
-                        head = (*start.cast_mut())
-                            .try_get_mut()
-                            .unwrap_unchecked() // we know it's Some by cycle check
-                            .as_mut()
-                            .unwrap_unchecked() // also Some by cycle check
-                            .next
-                            .take_inner();
+                        unsafe {
+                            // Break cycle by dereferencing Rc ptr and using it to pop Node's .next.
+                            // This is okay because only one Node points to this ptr,
+                            // and that Node should not access/mutate the ptr before it's destroyed.
+                            head = (*start.cast_mut())
+                                .try_get_mut()
+                                .unwrap_unchecked() // we know it's Some by cycle check
+                                .as_mut()
+                                .unwrap_unchecked() // also Some by cycle check
+                                .next
+                                .take_inner();
+                        }
                     }
                 },
             }
@@ -115,38 +157,6 @@ impl<T> Clone for Node<'_, T> {
     fn clone(&self) -> Self {
         Self { val: Rc::clone(&self.val), next: self.next.clone() }
     }
-}
-
-/// Checks if the given `Rc<T>` points to an *isolated* reference cycle of `Rc<T>`s
-/// (i.e., no other `Rc<T>` directly points into this reference cycle).
-/// The `f` callback indicates how to access the next `Rc<T>` in the sequence.
-/// 
-/// If this function does find a isolated cycle, it points to an `Rc<T>` in the cycle 
-/// Otherwise, this function returns None.
-/// 
-/// If a cycle *is* found, every `Rc<T>` within the cycle is known to have 1 reference exactly.
-/// 
-/// # Safety
-/// 
-/// The provided `Rc<T>` must have at least 2 strong references.
-unsafe fn find_isolated_cycle<T>(start: Rc<T>, mut f: impl FnMut(&T) -> Option<&Rc<T>>) -> Option<*const T> {
-    // Destroy Rc in ref count
-    // SAFETY: We know there are at least 2 strong references.
-    let start = Rc::into_raw(start);
-    Rc::decrement_strong_count(start);
-    
-    let mut ef = |t| f(t).filter(|rc| Rc::strong_count(rc) == 1);
-    // SAFETY: >=1 ref, still 
-    let mut tort = ef(&*start)?;
-    let mut hare = ef(tort)?;
-
-    while !Rc::ptr_eq(tort, hare) {
-        tort = ef(tort)?;
-        hare = ef(hare)?;
-        hare = ef(hare)?;
-    }
-    
-    Some(Rc::as_ptr(tort))
 }
 
 /// A singly-linked linked list aimed to be similar to Haskell's Data.List.
