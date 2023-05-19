@@ -288,23 +288,21 @@ impl<'a, T> ThunkList<'a, T> {
         left
     }
     pub fn foldr<U, F>(self, f: F, base: ThunkAny<'a, U>) -> ThunkAny<'a, U> 
-        where F: for<'f> FnMut(Rc<ThunkAny<'f, T>>, ThunkAny<'f, U>) -> U + 'a
+        where F: for<'f> FnMut(Rc<ThunkAny<'f, T>>, ThunkAny<'f, U>) -> U + Copy + 'a
     {
         fn foldr_node<'a, T, U, F>(nptr: NodePtr<'a, T>, mut f: F, base: ThunkAny<'a, U>) -> ThunkAny<'a, U>
-            where F: for<'f> FnMut(Rc<ThunkAny<'f, T>>, ThunkAny<'f, U>) -> U + 'a
+            where F: for<'f> FnMut(Rc<ThunkAny<'f, T>>, ThunkAny<'f, U>) -> U + Copy + 'a
         {
             match nptr.into_inner() {
                 Some(rc) => {
-                    let node = rc.unwrap_or_clone();
-
-                    node.and_then(|inner| match inner {
+                    rc.unwrap_or_clone().map(move |inner| match inner {
                         Some(node) => {
                             let Node { val, next } = node;
-                            let base = f(val, base);
 
-                            foldr_node(next, f, ThunkAny::of(base))
+                            let rhs = foldr_node(next, f, base);
+                            f(val, rhs)
                         },
-                        None => base,
+                        None => base.dethunk(),
                     })
                     .into_thunk()
                     .boxed()
@@ -553,10 +551,10 @@ mod tests {
         assert_eq!(cit.next(), None);
         
         let mut cit = c.into_iter();
-        assert_eq!(cit.next().map(|t| Rc::try_unwrap(t).unwrap().dethunk()), Some(2));
-        assert_eq!(cit.next().map(|t| Rc::try_unwrap(t).unwrap().dethunk()), Some(1));
-        assert_eq!(cit.next().map(|t| Rc::try_unwrap(t).unwrap().dethunk()), Some(0));
-        assert_eq!(cit.next().map(|t| Rc::try_unwrap(t).unwrap().dethunk()), None);
+        assert_eq!(cit.next().map(|t| t.unwrap_or_clone().dethunk()), Some(2));
+        assert_eq!(cit.next().map(|t| t.unwrap_or_clone().dethunk()), Some(1));
+        assert_eq!(cit.next().map(|t| t.unwrap_or_clone().dethunk()), Some(0));
+        assert_eq!(cit.next().map(|t| t.unwrap_or_clone().dethunk()), None);
     }
 
     #[test]
@@ -681,15 +679,25 @@ mod tests {
             .collect();
 
         let foldy = superand
-            .foldr(|t, u| u.dethunk() && *t.force(), ThunkAny::of(true));
+            .foldr(|t, u| *t.force() && u.dethunk(), ThunkAny::of(true));
         println!("{:?}", foldy.force());
 
         let list: ThunkList<usize> = (1..=100).collect();
+
         let list2 = list.foldr(
             |acc, cv| ThunkList::cons_known(*acc.force(), cv.dethunk()), 
             ThunkAny::of(ThunkList::new())
         );
         println!("{:?}", list2.dethunk());
+        
+        // let list3 = ThunkList::repeat(ThunkAny::<usize>::of(0));
+        // let list4 = list3.foldr(
+        //         |acc, cv| ThunkList::cons_lazy(acc.unwrap_or_clone(), cv), 
+        //         ThunkAny::of(ThunkList::new())
+        //     )
+        //     .dethunk();
+        // let vec4 = take_nc(&list4, 10);
+        // println!("{:?}", vec);
     }
 
     #[test]
