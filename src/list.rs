@@ -1,24 +1,113 @@
+use std::marker::PhantomData;
+use std::mem::ManuallyDrop;
 use std::rc::Rc;
 
 use crate::{Thunkable, ThunkAny};
 
 /// An Option<Node> thunk
 type MaybeNode<'a, T> = ThunkAny<'a, Option<Node<'a, T>>>;
+// fn down<'a, 'b>(t: ThunkList<'static, &'static ()>) -> ThunkList<'a, &'b ()> { t }
 
 #[derive(Debug)]
 struct Node<'a, T> {
     val: Rc<ThunkAny<'a, T>>,
-
-    // This outer Option should only be None once Node is in state to drop.
-    next: Mzrc<MaybeNode<'a, T>>
+    next: NodePtr<'a, T>
 }
 
 impl<'a, T> Node<'a, T> {
-    fn new(val: ThunkAny<'a, T>, next: Rc<ThunkAny<'a, Option<Node<'a, T>>>>) -> Node<'a, T> {
-        Node {
-            val: Rc::new(val),
-            next: Some(next),
+    pub fn tailed(val: Rc<ThunkAny<'a, T>>) -> (TailPtr<'a, T>, Node<'a, T>) {
+        let tail = TailPtr::new();
+        let node = Node { val, next: tail.as_node_ptr() };
+
+        (tail, node)
+    }
+}
+/// Wrapper holding either null or an Rc ptr pointing to a Node thunk.
+/// 
+/// When dropped, this breaks any isolated node cycles.
+#[derive(Debug)]
+struct NodePtr<'a, T>(Option<Rc<MaybeNode<'a, T>>>);
+impl<'a, T> NodePtr<'a, T> {
+    fn new(thunk: MaybeNode<'a, T>) -> Self {
+        Self(Some(Rc::new(thunk)))
+    }
+    /// Used for indicating this pointer is no longer used and can be dropped.
+    fn take_inner(&mut self) -> Option<Rc<MaybeNode<'a, T>>> {
+        self.0.take()
+    }
+    fn into_inner(self) -> Option<Rc<MaybeNode<'a, T>>> {
+        ManuallyDrop::new(self).take_inner()
+    }
+    /// Force resolves thunk.
+    fn force(&self) -> Option<&Node<'a, T>> {
+        self.0.as_deref()?.force().as_ref()
+    }
+
+    fn as_rc(&self) -> Option<&Rc<MaybeNode<'a, T>>> {
+        self.0.as_ref()
+    }
+    /// Points to the Node, or null.
+    #[allow(unused)]
+    fn as_ptr(&self) -> *const MaybeNode<'a, T> {
+        match &self.0 {
+            Some(rc) => Rc::as_ptr(rc),
+            None => std::ptr::null(),
         }
+    }
+}
+impl<'a, T> Clone for NodePtr<'a, T> {
+    fn clone(&self) -> Self {
+        Self(self.0.clone())
+    }
+}
+impl<'a, T> Drop for NodePtr<'a, T> {
+    fn drop(&mut self) {
+        // Repeatedly pop nodes until we hit shared nodes, a cycle, or nothing.
+        let mut head = self.take_inner();
+        while let Some(rc) = head.take() {
+            match Rc::try_unwrap(rc) {
+                Ok(thunk) => {
+                    // This data is owned only by us, so we can destroy it however we like.
+                    // If this thunk is initialized (outer Option), check if it holds a Node (inner Option).
+                    // If it does, set its next to be destroyed.
+                    if let Some(Some(mut inner)) = thunk.try_into_inner() {
+                        head = inner.next.take_inner();
+                    }
+                },
+                Err(rc) => unsafe {
+                    // This Rc has at least two references.
+                    // We want to check if it has multiple references because it's part of shared data
+                    // or because it's part of an isolated ref cycle.
+                    if let Some(start) = find_isolated_cycle(rc, |t| t.try_get()?.as_ref()?.next.as_rc()) {
+                        // Break cycle by dereferencing Rc ptr and using it to pop Node's .next.
+                        // This is okay because only one Node points to this ptr,
+                        // and that Node should not access/mutate the ptr before it's destroyed.
+                        head = (*start.cast_mut())
+                            .try_get_mut()
+                            .unwrap_unchecked() // we know it's Some by cycle check
+                            .as_mut()
+                            .unwrap_unchecked() // also Some by cycle check
+                            .next
+                            .take_inner();
+                    }
+                },
+            }
+        }
+    }
+}
+impl<'a, T> From<Rc<MaybeNode<'a, T>>> for NodePtr<'a, T> {
+    fn from(value: Rc<MaybeNode<'a, T>>) -> Self {
+        NodePtr(Some(value))
+    }
+}
+impl<'a, T> From<MaybeNode<'a, T>> for NodePtr<'a, T> {
+    fn from(value: MaybeNode<'a, T>) -> Self {
+        NodePtr::new(value)
+    }
+}
+impl<'a, T> From<Node<'a, T>> for NodePtr<'a, T> {
+    fn from(value: Node<'a, T>) -> Self {
+        NodePtr::from(ThunkAny::of(Some(value)))
     }
 }
 
@@ -60,147 +149,241 @@ unsafe fn find_isolated_cycle<T>(start: Rc<T>, mut f: impl FnMut(&T) -> Option<&
     Some(Rc::as_ptr(tort))
 }
 
-fn drop_maybe_node<T>(mut head: Mzrc<MaybeNode<T>>) {
-    // Repeatedly pop nodes until we hit shared nodes, a cycle, or nothing.
-    while let Some(rc) = head.take() {
-        match Rc::try_unwrap(rc) {
-            Ok(thunk) => {
-                // This data is owned only by us, so we can destroy it however we like.
-                // If this thunk is initialized (outer Option), check if it holds a Node (inner Option).
-                // If it does, set its next to be destroyed.
-                if let Some(Some(mut inner)) = thunk.try_into_inner() {
-                    head = inner.next.take();
-                }
-            },
-            Err(rc) => unsafe {
-                // This Rc has at least two references.
-                // We want to check if it has multiple references because it's part of shared data
-                // or because it's part of an isolated ref cycle.
-                if let Some(start) = find_isolated_cycle(rc, |t| t.try_get()?.as_ref()?.next.as_ref()) {
-                    // Break cycle by dereferencing Rc ptr and using it to pop Node's .next.
-                    // This is okay because only one Node points to this ptr,
-                    // and that Node should not access/mutate the ptr before it's destroyed.
-                    head = (*start.cast_mut())
-                        .try_get_mut()
-                        .unwrap_unchecked() // we know it's Some by cycle check
-                        .as_mut()
-                        .unwrap_unchecked() // also Some by cycle check
-                        .next
-                        .take();
-                }
-            },
-        }
-    }
-}
-
-impl<T> Drop for Node<'_, T> {
-    fn drop(&mut self) {
-        drop_maybe_node(self.next.take());
-    }
-}
-
-/// Wrapper indicating an Rc ptr or null.
-/// 
-/// In a drop impl, `.take` can be called to change the Rc without causing moves.
-/// 
-/// This could be done unsafely (and probably less clunkily) with `*const T` 
-/// and `Rc::into_raw`/`Rc::from_raw`ing back
-/// and forth... or we could just let Rust handle all the work. So...
-type Mzrc<T> = Option<Rc<T>>;
-
-fn new_mzrc<T>(t: T) -> Mzrc<T> {
-    Some(Rc::new(t))
-}
-
+/// A singly-linked linked list aimed to be similar to Haskell's Data.List.
 pub struct ThunkList<'a, T> {
-    head: Mzrc<MaybeNode<'a, T>>
+    head: NodePtr<'a, T>
 }
 impl<'a, T> ThunkList<'a, T> {
+    /// Creates a new empty list.
     pub fn new() -> Self {
-        ThunkList { head: new_mzrc(ThunkAny::of(None)) }
-    }
-    pub fn cons(f: ThunkAny<'a, T>, lst: Self) -> ThunkList<'a, T> {
-        lst.pushed(f)
-    }
-    pub fn cons_known(t: T, lst: Self) -> ThunkList<'a, T> {
-        lst.pushed(ThunkAny::of(t))
+        ThunkList { head: NodePtr::new(ThunkAny::of(None)) }
     }
 
-    pub fn raw_cons(f: ThunkAny<'a, T>) -> (LPtr<'a, T>, ThunkList<'a, T>) {
-        let next = LPtr::new();
-        let node = Node::new(
-            f,
-            Rc::clone(&next.0)
-        );
+    /// Concats a thunk to the end of this list.
+    pub fn cons(f: ThunkAny<'a, T>, this: Self) -> ThunkList<'a, T> {
+        let node = Node {
+            val: Rc::new(f),
+            next: this.head,
+        };
 
-        (next, ThunkList::from(node))
+        ThunkList { head: NodePtr::from(node) }
+    }
+    /// Concats a value to the end of this list.
+    pub fn cons_known(t: T, this: Self) -> ThunkList<'a, T> {
+        ThunkList::cons(ThunkAny::of(t), this)
+    }
+    /// Constructs a list using two lazy parameters.
+    pub fn cons_lazy(f: ThunkAny<'a, T>, this: ThunkAny<'a, Self>) -> ThunkList<'a, T> {
+        let node = Node {
+            val: Rc::new(f),
+            next: NodePtr::from({
+                    crate::ThunkBox::new(|| {
+                    this.resolve().head.force().cloned()
+                }).into_thunk_any()
+            }),
+        };
+
+        ThunkList { head: NodePtr::from(node) }
+    }
+    /// A raw version of [`ThunkList::cons`].
+    /// 
+    /// If cons is considered to take in a head element and a tail list (`head : tail`),
+    /// this function accepts the head element and returns a not-yet-defined tail 
+    /// and the resultant `head : tail` list.
+    /// 
+    /// The tail can be set to a list via [`TailPtr::bind`].
+    pub fn raw_cons(head: ThunkAny<'a, T>) -> (TailPtr<'a, T>, ThunkList<'a, T>) {
+        let (tail, node) = Node::tailed(Rc::new(head));
+        (tail, ThunkList { head: NodePtr::from(node) })
     }
 
-    pub fn cons_cyclic(f: ThunkAny<'a, T>) -> ThunkList<'a, T> {
+    /// Adds a pointer to the end of the list.
+    pub fn raw_append(self) -> (TailPtr<'a, T>, ThunkList<'a, T>) {
+        fn insert_end<'a, T>(ptr: NodePtr<'a, T>, end: NodePtr<'a, T>) -> NodePtr<'a, T> {
+            match ptr.into_inner() {
+                Some(rc) => {
+                    match rc.unwrap_or_clone().dethunk() {
+                        Some(Node { val, next }) => {
+                            NodePtr::from(
+                                crate::ThunkBox::new(move || {
+                                    Some(Node { val, next: insert_end(next, end)})
+                                }).into_thunk_any()
+                            )
+                        },
+                        None => end,
+                    }
+                },
+                None => end,
+            }
+        }
+        let tail = TailPtr::new();
+        let head = insert_end(self.head, tail.as_node_ptr());
+        (tail, ThunkList { head })
+    }
+    /// Appends two lists together.
+    pub fn append(self, rest: ThunkList<'a, T>) -> ThunkList<'a, T> {
+        let (next, list) = self.raw_append();
+        next.bind(&rest);
+        list
+    }
+
+    /// Gets the first thunk in the list.
+    pub fn first(&self) -> Option<&ThunkAny<T>> {
+        self.iter().next()
+    }
+    /// Gets the last thunk in the list.
+    pub fn last(&self) -> Option<&ThunkAny<T>> {
+        self.iter().last()
+    }
+    /// Reverses the list.
+    /// 
+    /// This is a strict operation and will immediately reverse the entire list.
+    pub fn reverse(self) -> ThunkList<'a, T> {
+        let mut lst = self;
+        let mut rev = NodePtr(None);
+
+        while let Some((el, rest)) = lst.split_first() {
+            lst = rest;
+            
+            let node = Node {val: el, next: rev };
+            rev = NodePtr::from(node);
+        }
+        
+        ThunkList { head: rev }
+    }
+    /// Creates a list where the provided thunk element is repeated infinitely.
+    pub fn repeat(f: ThunkAny<'a, T>) -> ThunkList<'a, T> {
         let (next, lst) = ThunkList::raw_cons(f);
         next.bind(&lst);
         
         lst
     }
-
-    fn pushed(mut self, f: ThunkAny<'a, T>) -> ThunkList<'a, T> {
-        let node = Node {
-            val: Rc::new(f),
-            next: self.head.take(),
-        };
-
-        ThunkList::from(node)
-    }
-
-    pub fn split_first(mut self) -> Option<(Rc<ThunkAny<'a, T>>, ThunkList<'a, T>)> {
-        let node = match Rc::try_unwrap(self.head.take()?) {
+    /// Splits the first element.
+    /// 
+    /// This is a strict operation and will immediately split the list.
+    pub fn split_first(self) -> Option<(Rc<ThunkAny<'a, T>>, ThunkList<'a, T>)> {
+        let node = match Rc::try_unwrap(self.head.into_inner()?) {
             Ok(t) => t.dethunk(),
             Err(e) => e.force().clone(),
         }?;
 
-        let Node { ref val, ref next } = node;
-        let val = Rc::clone(val);
-        let next = next.clone();
-        std::mem::drop(node);
-
+        let Node { val, next } = node;
         Some((val, ThunkList { head: next }))
     }
-    pub fn iter(&self) -> Iter<'a, '_, T> {
-        Iter(self.head.as_deref())
+
+    fn raw_split_at(self, n: usize) -> (ThunkList<'a, T>, TailPtr<'a, T>, ThunkList<'a, T>) {
+        let mut tail = TailPtr::new();
+        let left = ThunkList { head: tail.as_node_ptr() };
+        let mut right = self;
+
+        for _ in 0..n {
+            if let Some((val, rest)) = right.split_first() {
+                right = rest;
+
+                let (new_tail, node) = Node::tailed(val);
+                tail.bind(&ThunkList { head: NodePtr::from(node) });
+                tail = new_tail;
+            } else {
+                return (left, tail, ThunkList::new());
+            }
+        }
+
+        (left, tail, right)
     }
-    pub fn get(&self, n: usize) -> Option<&ThunkAny<'a, T>> {
+    pub fn split_at(self, n: usize) -> (ThunkList<'a, T>, ThunkList<'a, T>) {
+        let (left, ltail, right) = self.raw_split_at(n);
+        ltail.close();
+        (left, right)
+    }
+    pub fn insert(self, n: usize, t: ThunkAny<'a, T>) -> ThunkList<'a, T> {
+        let (left, ltail, right) = self.raw_split_at(n);
+        ltail.bind(&ThunkList::cons(t, right));
+        left
+    }
+    pub fn foldr<U, F>(self, f: F, base: ThunkAny<'a, U>) -> ThunkAny<'a, U> 
+        where F: FnMut(Rc<ThunkAny<'a, T>>, ThunkAny<'a, U>) -> U + Copy + 'a
+    {
+        fn foldr_node<'a, T, U, F>(nptr: NodePtr<'a, T>, mut f: F, base: ThunkAny<'a, U>) -> ThunkAny<'a, U>
+            where F: FnMut(Rc<ThunkAny<'a, T>>, ThunkAny<'a, U>) -> U + Copy + 'a
+        {
+            match nptr.into_inner() {
+                Some(rc) => {
+                    crate::ThunkBox::new(move || {
+                        match rc.unwrap_or_clone().dethunk() {
+                            Some(node) => {
+                                let Node { val, next } = node;
+    
+                                let rhs = foldr_node(next, f, base);
+                                f(val, rhs)
+                            },
+                            None => base.dethunk()
+                        }
+                    }).into_thunk_any()
+                },
+                None => base,
+            }
+        }
+
+        foldr_node(self.head, f, base)
+    }
+    pub fn iter(&self) -> Iter<T> {
+        Iter(&self.head)
+    }
+    pub fn iter_strict(&self) -> IterStrict<T> {
+        IterStrict(&self.head)
+    }
+    /// Gets the thunk at this index.
+    pub fn get(&self, n: usize) -> Option<&ThunkAny<T>> {
         self.iter().nth(n)
     }
-    pub fn get_forced(&self, n: usize) -> Option<&T> {
-        self.iter().nth(n).map(ThunkAny::force)
+    /// Gets the strict value at this index.
+    /// 
+    /// This will resolve the value at the index if not already resolved.
+    pub fn get_strict(&self, n: usize) -> Option<&T> {
+        self.get(n).map(ThunkAny::force)
     }
+    /// Gets the length of the linked list.
     pub fn len(&self) -> usize {
         self.iter().count()
     }
+    /// Gets whether the linked list is empty or not.
     pub fn is_empty(&self) -> bool {
-        match self.head.as_ref() {
-            Some(t) => t.force().is_none(),
-            None => true,
-        }
+        self.head.force().is_none()
     }
     pub fn iterate_known(mut f: impl FnMut() -> Option<T> + 'a) -> ThunkList<'a, T> {
         ThunkList::iterate(move || f().map(ThunkAny::of))
     }
     pub fn iterate(f: impl FnMut() -> Option<ThunkAny<'a, T>> + 'a) -> ThunkList<'a, T> {
         fn iterate_node<'a, T>(mut f: impl FnMut() -> Option<ThunkAny<'a, T>> + 'a) -> MaybeNode<'a, T> {
-            (|| {
-                let node = Node::new(f()?, Rc::new(iterate_node(f)));
-                Some(node)
-            }).into_box()
-                .into_thunk_a()
+            crate::ThunkBox::new(|| {
+                Some(Node {
+                    val: Rc::new(f()?),
+                    next: NodePtr::from(iterate_node(f))
+                })
+            }).into_thunk_any()
         }
 
-        ThunkList::from(iterate_node(f))
+        ThunkList { head: NodePtr::from(iterate_node(f)) }
     }
+    pub fn iterate_strict(mut f: impl FnMut() -> Option<ThunkAny<'a, T>>) -> ThunkList<'a, T> {
+        match f() {
+            Some(el) => {
+                let (mut next, lst) = ThunkList::raw_cons(el);
+                while let Some(el) = f() {
+                    let (next1, lst1) = ThunkList::raw_cons(el);
+                    next.bind(&lst1);
+                    next = next1;
+                }
+                next.close();
 
-    pub fn from_iter<I: IntoIterator<Item=T> + 'a>(iter: I) -> ThunkList<'a, T> {
+                lst
+            }
+            None => ThunkList::new()
+        }
+    }
+    pub fn from_iter_lazy<I: IntoIterator<Item=ThunkAny<'a, T>> + 'a>(iter: I) -> ThunkList<'a, T> {
         let mut it = iter.into_iter();
-        ThunkList::iterate_known(move || it.next())
+        ThunkList::iterate(move || it.next())
     }
 }
 impl<'a, T: std::fmt::Debug> std::fmt::Debug for ThunkList<'a, T> {
@@ -210,23 +393,38 @@ impl<'a, T: std::fmt::Debug> std::fmt::Debug for ThunkList<'a, T> {
             .finish()
     }
 }
-impl<'a, T> Drop for ThunkList<'a, T> {
-    fn drop(&mut self) {
-        drop_maybe_node(self.head.take())
-    }
+
+#[must_use = "unconsumed TailPtr leads to broken lists"]
+pub struct TailPtr<'a, T> {
+    ptr: Rc<MaybeNode<'a, T>>,
+    // Force invariance on 'a, T
+    _ghost: PhantomData<*mut Node<'a, T>>
 }
-pub struct LPtr<'a, T>(Rc<MaybeNode<'a, T>>);
-impl<'a, T> LPtr<'a, T> {
+impl<'a, T> TailPtr<'a, T> {
     fn new() -> Self {
-        LPtr(Rc::new(ThunkAny::undef()))
+        TailPtr {
+            ptr: Rc::new(ThunkAny::undef()),
+            _ghost: PhantomData
+        }
     }
 
+    fn as_node_ptr(&self) -> NodePtr<'a, T> {
+        NodePtr::from(Rc::clone(&self.ptr))
+    }
     pub fn bind(self, l: &ThunkList<'a, T>) -> bool {
-        let val = match &l.head {
-            Some(t) => t.force().clone(),
-            None => None,
-        };
-        self.0.set(val).is_ok()
+        let val = l.head.force().cloned();
+
+        // SAFETY: LPtr is invariant over Node<'a, T>, 
+        // so only pointers of same lifetime are allowed.
+        unsafe {
+            self.ptr.set(val).is_ok()
+        }
+    }
+    pub fn close(self) -> bool {
+        // SAFETY: None is not dependent on lifetime.
+        unsafe {
+            self.ptr.set(None).is_ok()
+        }
     }
 }
 
@@ -240,29 +438,33 @@ impl<T> Clone for ThunkList<'_, T> {
         Self { head: self.head.clone() }
     }
 }
-impl<'a, T> From<MaybeNode<'a, T>> for ThunkList<'a, T> {
-    fn from(value: MaybeNode<'a, T>) -> Self {
-        ThunkList { head: new_mzrc(value) }
-    }
-}
-impl<'a, T> From<Node<'a, T>> for ThunkList<'a, T> {
-    fn from(value: Node<'a, T>) -> Self {
-        ThunkList::from(ThunkAny::of(Some(value)))
-    }
-}
-pub struct Iter<'a, 'b, T>(Option<&'b MaybeNode<'a, T>>);
-impl<'a, 'b, T> Iterator for Iter<'a, 'b, T> {
-    type Item = &'b ThunkAny<'a, T>;
+pub struct Iter<'r, T>(&'r NodePtr<'r, T>);
+impl<'r, T> Iterator for Iter<'r, T> {
+    type Item = &'r ThunkAny<'r, T>;
 
     fn next(&mut self) -> Option<Self::Item> {
-        let node = self.0?.force().as_ref()?;
+        let node = self.0.force()?;
         
         let val = node.val.as_ref();
-        self.0 = node.next.as_deref();
+        self.0 = &node.next;
         
         Some(val)
     }
 }
+pub struct IterStrict<'r, T>(&'r NodePtr<'r, T>);
+impl<'r, T> Iterator for IterStrict<'r, T> {
+    type Item = &'r T;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        let node = self.0.force()?;
+        
+        let val = node.val.force();
+        self.0 = &node.next;
+        
+        Some(val)
+    }
+}
+
 pub struct IntoIter<'a, T>(Option<ThunkList<'a, T>>);
 impl<'a, T> Iterator for IntoIter<'a, T> {
     type Item = Rc<ThunkAny<'a, T>>;
@@ -280,6 +482,18 @@ impl<'a, T> IntoIterator for ThunkList<'a, T> {
 
     fn into_iter(self) -> Self::IntoIter {
         IntoIter(Some(self))
+    }
+}
+impl<'a, A> FromIterator<A> for ThunkList<'a, A> {
+    fn from_iter<T: IntoIterator<Item = A>>(iter: T) -> Self {
+        let mut it = iter.into_iter();
+        ThunkList::iterate_strict(move || it.next().map(ThunkAny::of))
+    }
+}
+impl<'a, A> FromIterator<ThunkAny<'a, A>> for ThunkList<'a, A> {
+    fn from_iter<T: IntoIterator<Item = ThunkAny<'a, A>>>(iter: T) -> Self {
+        let mut it = iter.into_iter();
+        ThunkList::iterate_strict(move || it.next())
     }
 }
 
@@ -300,21 +514,19 @@ mod tests {
     use super::ThunkList;
 
     fn take_n<'a, T>(t: &'a ThunkList<T>, n: usize) -> Vec<&'a T> {
-        t.iter()
+        t.iter_strict()
             .take(n)
-            .map(ThunkAny::force)
             .collect()
     }
     fn take_nc<T: Clone>(t: &ThunkList<T>, n: usize) -> Vec<T> {
-        t.iter()
+        t.iter_strict()
             .take(n)
-            .map(ThunkAny::force)
             .cloned()
             .collect()
     }
     fn examine_rc_path<T>(weak: &std::rc::Weak<super::MaybeNode<T>>, ct: usize) {
         fn get_next<'a, 'b, T>(t: &'b super::MaybeNode<'a, T>) -> Option<&'b Rc<super::MaybeNode<'a, T>>> {
-            t.try_get()?.as_ref()?.next.as_ref()
+            t.try_get()?.as_ref()?.next.as_rc()
         }
 
         println!("start ptr: {:?}, ct: {}", weak.as_ptr(), weak.strong_count());
@@ -336,7 +548,7 @@ mod tests {
         }
     }
     #[test]
-    fn conner() {
+    fn list_to_iter() {
         let c = list![2usize, 1, 0];
 
         let mut cit = c.iter();
@@ -344,20 +556,26 @@ mod tests {
         assert_eq!(cit.next().map(ThunkAny::force), Some(&1));
         assert_eq!(cit.next().map(ThunkAny::force), Some(&0));
         assert_eq!(cit.next().map(ThunkAny::force), None);
+
+        let mut cit = c.iter_strict();
+        assert_eq!(cit.next(), Some(&2));
+        assert_eq!(cit.next(), Some(&1));
+        assert_eq!(cit.next(), Some(&0));
+        assert_eq!(cit.next(), None);
         
         let mut cit = c.into_iter();
-        assert_eq!(cit.next().map(|t| Rc::try_unwrap(t).unwrap()).map(ThunkAny::dethunk), Some(2));
-        assert_eq!(cit.next().map(|t| Rc::try_unwrap(t).unwrap()).map(ThunkAny::dethunk), Some(1));
-        assert_eq!(cit.next().map(|t| Rc::try_unwrap(t).unwrap()).map(ThunkAny::dethunk), Some(0));
-        assert_eq!(cit.next().map(|t| Rc::try_unwrap(t).unwrap()).map(ThunkAny::dethunk), None);
+        assert_eq!(cit.next().map(|t| t.unwrap_or_clone().dethunk()), Some(2));
+        assert_eq!(cit.next().map(|t| t.unwrap_or_clone().dethunk()), Some(1));
+        assert_eq!(cit.next().map(|t| t.unwrap_or_clone().dethunk()), Some(0));
+        assert_eq!(cit.next().map(|t| t.unwrap_or_clone().dethunk()), None);
     }
 
     #[test]
-    fn cc() {
+    fn raw_cons_test() {
         {
             const N: usize = 13;
-            let lst = ThunkList::cons_cyclic(ThunkAny::of(N));
-            let ptr = Rc::downgrade(lst.head.as_ref().unwrap());
+            let lst = ThunkList::repeat(ThunkAny::of(N)); // [N, ...]
+            let ptr = Rc::downgrade(lst.head.as_rc().unwrap());
     
             let first_ten = take_nc(&lst, 10);
             assert_eq!(first_ten, [N; 10]);
@@ -370,7 +588,7 @@ mod tests {
         
         {
             let (next, lst2) = ThunkList::raw_cons(ThunkAny::of(0usize));
-            let ptr = Rc::downgrade(lst2.head.as_ref().unwrap());
+            let ptr = Rc::downgrade(lst2.head.as_rc().unwrap());
     
             let lst = list![3, 2, 1; lst2.clone()];
             next.bind(&lst);
@@ -381,12 +599,12 @@ mod tests {
             examine_rc_path(&ptr, 10);
             
             println!();
-            println!("dropping {:?}", Rc::as_ptr(lst.head.as_ref().unwrap()));
+            println!("dropping {:?}", lst.head.as_ptr());
             std::mem::drop(lst);
             examine_rc_path(&ptr, 10);
             
             println!();
-            println!("dropping {:?}", Rc::as_ptr(lst2.head.as_ref().unwrap()));
+            println!("dropping {:?}", lst2.head.as_ptr());
             std::mem::drop(lst2);
             examine_rc_path(&ptr, 10);
 
@@ -401,19 +619,12 @@ mod tests {
         let mut ctr = 0usize;
         {
             let lst = ThunkList::iterate_known(|| {ctr += 1; Some(dbg!(ctr))});
-            println!("{:?}", take_nc(&lst, 1));
-            println!("{:?}", take_nc(&lst, 5));
-            println!("{:?}", take_nc(&lst, 10));
+            assert_eq!(take_nc(&lst, 1), [1]);
+            assert_eq!(take_nc(&lst, 5), [1, 2, 3, 4, 5]);
+            assert_eq!(take_nc(&lst, 10), [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]);
         }
         ctr += 1;
-        println!("{ctr}");
-    }
-
-    #[test]
-    fn iterate2() {
-        let lst = ThunkList::from_iter(0..10);
-        println!("{:?}", lst.get_forced(1));
-        println!("{:?}", lst.get_forced(5));
+        assert_eq!(ctr, 11);
     }
 
     #[test]
@@ -421,8 +632,107 @@ mod tests {
         let s = "str";
         {
             let t = String::from("hello");
-            let x = list![s, &t];
+            let x = list!["str", &t];
+            std::mem::drop(x);
             std::mem::drop(t);
         }
+        println!("{s}");
+    }
+
+    #[test]
+    fn raw_cons_lifetimes() {
+        let (_ptr1, list1) = ThunkList::raw_cons(ThunkAny::of("hello"));
+        {
+            let a = String::from("hello");
+            let (ptr2, list2) = ThunkList::raw_cons(ThunkAny::of(a.as_str()));
+            ptr2.bind(&list1);
+            std::mem::drop(list2);
+        }
+        std::mem::drop(list1);
+    }
+
+    #[test]
+    fn strict_collect() {
+        let list: ThunkList<usize> = (0..=15)
+            .map(|i| {
+                crate::ThunkBox::new(move || {
+                    println!("initialized {i}");
+                    i * 2
+                }).into_thunk_any()
+            })
+            .collect();
+
+        assert_eq!(list.get_strict(14), Some(&28));
+        assert_eq!(list.get_strict(3),  Some(&6));
+        assert_eq!(list.get_strict(12), Some(&24));
+        assert_eq!(list.get_strict(2),  Some(&4));
+        assert_eq!(list.get_strict(4),  Some(&8));
+        assert_eq!(list.get_strict(9),  Some(&18));
+        assert_eq!(list.get_strict(1),  Some(&2));
+    }
+
+    #[test]
+    fn foldr_test() {
+        let superand: ThunkList<bool> = (1..=100)
+            .map(|i| {
+                crate::ThunkBox::new(move || {
+                    println!("initialized {i}");
+                    i % 29 != 0
+                }).into_thunk_any()
+            })
+            .collect();
+
+        let foldy = superand.foldr(
+            |t, u| *t.force() && u.dethunk(), 
+            ThunkAny::of(true)
+        );
+        assert!(!*foldy.force());
+
+        let list: ThunkList<usize> = (1..=100).collect();
+
+        let list2 = list.foldr(
+            |acc, cv| ThunkList::cons_lazy(acc.unwrap_or_clone(), cv), 
+            ThunkAny::of(ThunkList::new())
+        );
+        assert!({
+            list2.force()
+                .iter_strict()
+                .copied()
+                .eq(1..=100)
+        }, "{list2:?} != {:?}", 1..=100);
+
+        let list3: ThunkList<usize> = ThunkList::repeat(ThunkAny::of(0));
+        let list4 = list3.foldr(
+            |acc, cv| ThunkList::cons_lazy(acc.unwrap_or_clone(), cv), 
+            ThunkAny::of(ThunkList::new())
+        ).dethunk();
+        let vec4 = take_nc(&list4, 25);
+        assert_eq!(vec4, [0; 25]);
+    }
+
+    #[test]
+    fn raw_append_test() {
+        let mut list: ThunkList<usize> = (1..=15).collect();
+        list = list.append(list![16, 17, 18]);
+
+        assert!(list.iter_strict().copied().eq(1..=18), "{list:?} != {:?}", 1..=18);
+    }
+
+    #[test]
+    fn split_test() {
+        let list: ThunkList<usize> = (1..=15).collect();
+        let (left, right) = list.split_at(4);
+        assert!(left.iter_strict().copied().eq(1..=4), "{left:?} != {:?}", 1..=4);
+        assert!(right.iter_strict().copied().eq(5..=15), "{right:?} != {:?}", 5..=15);
+
+        let list: ThunkList<usize> = (1..=15).collect();
+        let list = list.insert(4, ThunkAny::of(100));
+        assert_eq!(take_nc(&list, 16), [1, 2, 3, 4, 100, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]);
+
+        let list = ThunkList::repeat(ThunkAny::of(0));
+        let list = list.insert(10, ThunkAny::of(1));
+        assert_eq!(take_nc(&list, 25), 
+            [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+        );
     }
 }

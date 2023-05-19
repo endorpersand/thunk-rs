@@ -1,14 +1,6 @@
 use crate::tuple::TupleConcat;
-use crate::{Thunkable, Thunk};
+use crate::Thunkable;
 
-pub struct AsRef<'a, F: Thunkable>(pub(crate) &'a Thunk<F>);
-impl<'a, F: Thunkable> Thunkable for AsRef<'a, F> {
-    type Item = &'a F::Item;
-
-    fn resolve(self) -> Self::Item {
-        self.0.force()
-    }
-}
 pub struct Map<F, M>(pub(crate) F, pub(crate) M);
 impl<U, F: Thunkable, M: FnOnce(F::Item) -> U> Thunkable for Map<F, M> {
     type Item = U;
