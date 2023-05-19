@@ -172,6 +172,19 @@ impl<'a, T> ThunkList<'a, T> {
     pub fn cons_known(t: T, this: Self) -> ThunkList<'a, T> {
         ThunkList::cons(ThunkAny::of(t), this)
     }
+    /// Constructs a list using two lazy parameters.
+    pub fn cons_lazy(f: ThunkAny<'a, T>, this: ThunkAny<'a, Self>) -> ThunkList<'a, T> {
+        let node = Node {
+            val: Rc::new(f),
+            next: NodePtr::from({
+                    crate::ThunkBox::new(|| {
+                    this.resolve().head.force().cloned()
+                }).into_thunk_a()
+            }),
+        };
+
+        ThunkList { head: NodePtr::from(node) }
+    }
     /// A raw version of [`ThunkList::cons`].
     /// 
     /// If cons is considered to take in a head element and a tail list (`head : tail`),
@@ -288,24 +301,24 @@ impl<'a, T> ThunkList<'a, T> {
         left
     }
     pub fn foldr<U, F>(self, f: F, base: ThunkAny<'a, U>) -> ThunkAny<'a, U> 
-        where F: for<'f> FnMut(Rc<ThunkAny<'f, T>>, ThunkAny<'f, U>) -> U + Copy + 'a
+        where F: FnMut(Rc<ThunkAny<'a, T>>, ThunkAny<'a, U>) -> U + Copy + 'a
     {
         fn foldr_node<'a, T, U, F>(nptr: NodePtr<'a, T>, mut f: F, base: ThunkAny<'a, U>) -> ThunkAny<'a, U>
-            where F: for<'f> FnMut(Rc<ThunkAny<'f, T>>, ThunkAny<'f, U>) -> U + Copy + 'a
+            where F: FnMut(Rc<ThunkAny<'a, T>>, ThunkAny<'a, U>) -> U + Copy + 'a
         {
             match nptr.into_inner() {
                 Some(rc) => {
-                    rc.unwrap_or_clone().map(move |inner| match inner {
-                        Some(node) => {
-                            let Node { val, next } = node;
-
-                            let rhs = foldr_node(next, f, base);
-                            f(val, rhs)
-                        },
-                        None => base.dethunk(),
-                    })
-                    .into_thunk()
-                    .boxed()
+                    crate::ThunkBox::new(move || {
+                        match rc.unwrap_or_clone().dethunk() {
+                            Some(node) => {
+                                let Node { val, next } = node;
+    
+                                let rhs = foldr_node(next, f, base);
+                                f(val, rhs)
+                            },
+                            None => base.dethunk()
+                        }
+                    }).into_thunk_a()
                 },
                 None => base,
             }
@@ -496,7 +509,7 @@ macro_rules! list {
 mod tests {
     use std::rc::Rc;
 
-    use crate::{ThunkAny, Thunkable};
+    use crate::ThunkAny;
 
     use super::ThunkList;
 
@@ -642,11 +655,10 @@ mod tests {
     fn strict_collect() {
         let list: ThunkList<usize> = (0..=15)
             .map(|i| {
-                ThunkAny::of(i)
-                .inspect(|t| println!("initialized {t}"))
-                    .map(|t| t * 2)
-                    .into_thunk()
-                    .boxed()
+                crate::ThunkBox::new(move || {
+                    println!("initialized {i}");
+                    i * 2
+                }).into_thunk_a()
             })
             .collect();
 
@@ -663,11 +675,10 @@ mod tests {
     fn foldr_test() {
         let superand: ThunkList<bool> = (1..=100)
             .map(|i| {
-                ThunkAny::of(i)
-                    .inspect(|t| println!("initialized {t}"))
-                    .map(|t| t % 29 != 0)
-                    .into_thunk()
-                    .boxed()
+                crate::ThunkBox::new(move || {
+                    println!("initialized {i}");
+                    i % 29 != 0
+                }).into_thunk_a()
             })
             .collect();
 
@@ -680,7 +691,7 @@ mod tests {
         let list: ThunkList<usize> = (1..=100).collect();
 
         let list2 = list.foldr(
-            |acc, cv| ThunkList::cons_known(*acc.force(), cv.dethunk()), 
+            |acc, cv| ThunkList::cons_lazy(acc.unwrap_or_clone(), cv), 
             ThunkAny::of(ThunkList::new())
         );
         assert!({
@@ -690,14 +701,13 @@ mod tests {
                 .eq(1..=100)
         });
         
-        // let list3 = ThunkList::repeat(ThunkAny::<usize>::of(0));
-        // let list4 = list3.foldr(
-        //         |acc, cv| ThunkList::cons_lazy(acc.unwrap_or_clone(), cv), 
-        //         ThunkAny::of(ThunkList::new())
-        //     )
-        //     .dethunk();
-        // let vec4 = take_nc(&list4, 10);
-        // println!("{:?}", vec);
+        let list3: ThunkList<usize> = ThunkList::repeat(ThunkAny::of(0));
+        let list4 = list3.foldr(
+            |acc, cv| ThunkList::cons_lazy(acc.unwrap_or_clone(), cv), 
+            ThunkAny::of(ThunkList::new())
+        ).dethunk();
+        let vec4 = take_nc(&list4, 25);
+        assert_eq!(vec4, [0; 25]);
     }
 
     #[test]
