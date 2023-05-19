@@ -40,9 +40,51 @@ fn find_isolated_cycle<T>(start: Rc<T>, mut f: impl FnMut(&T) -> Option<&Rc<T>>)
     find_cycle(start, |t| f(t).filter(|rc| Rc::strong_count(rc) == 1))
 }
 
-struct Rho<'a, T> {
-    flat: Vec<Rc<ThunkAny<'a, T>>>, 
-    cycled: Vec<Rc<ThunkAny<'a, T>>>
+/// Traverses a directed graph, calculating the length before loop, and the loop length
+fn find_cycle_len<T, NEXT, EQ>(start: &T, mut next: NEXT, mut eq: EQ) -> (usize, usize) 
+    where NEXT: FnMut(&T) -> Option<&T>,
+        EQ: FnMut(&T, &T) -> bool
+{
+    // searching powers of 2
+    let mut power = 1;
+    let mut lambda = 1;
+    let mut tort = start;
+    let Some(mut hare) = next(tort) else { return (power, 0) };
+
+    // check tort (2^i - 1) against 2^i ..= 2^(i + 1)
+    while !eq(tort, hare) {
+        if power == lambda {
+            tort = hare;
+            power *= 2;
+            lambda = 0;
+        }
+
+        hare = match next(hare) {
+            Some(t) => t,
+            None => return (power + lambda, 0),
+        };
+        lambda += 1;
+    }
+
+    // Distance tort & hare by lambda
+    tort = start;
+    hare = start;
+    for _ in 0..lambda {
+        hare = next(hare)
+            .expect("hare failed to traverse through known pointers");
+    }
+
+    // count mu
+    let mut mu = 0;
+    while !eq(tort, hare) {
+        tort = next(tort)
+            .expect("tort failed to traverse through known pointers");
+        hare = next(hare)
+            .expect("hare failed to traverse through known pointers");
+        mu += 1;
+    }
+ 
+    (mu, lambda)
 }
 
 /// An Option<Node> thunk
@@ -352,9 +394,21 @@ impl<'a, T> ThunkList<'a, T> {
     pub fn get_strict(&self, n: usize) -> Option<&T> {
         self.get(n).map(ThunkAny::force)
     }
-    /// Gets the length of the linked list.
+    /// Gets the length of the linked list (as an iterator).
+    /// 
+    /// This will hang if the list is infinite.
     pub fn len(&self) -> usize {
         self.iter().count()
+    }
+    /// Gets the length of the linked list.
+    /// 
+    /// This returns the length of the list prior to any cycle, and then the length of the cycle.
+    /// This will hang if the list is infinite but does not have a cycle.
+    pub fn list_len(&self) -> (usize, usize) {
+        match self.head.force() {
+            Some(node) => find_cycle_len(node, |t| t.next.force(), |a, b| Rc::ptr_eq(&a.val, &b.val)),
+            None => (0, 0),
+        }
     }
     /// Gets whether the linked list is empty or not.
     pub fn is_empty(&self) -> bool {
@@ -448,6 +502,18 @@ impl<T> Clone for ThunkList<'_, T> {
         Self { head: self.head.clone() }
     }
 }
+impl<T: PartialEq> PartialEq for ThunkList<'_, T> {
+    fn eq(&self, other: &Self) -> bool {
+        let (mu1, la1) = self.list_len();
+        let (mu2, la2) = other.list_len();
+        let cmp_size = mu1.max(mu2) + la1 * la2;
+
+        self.iter().take(cmp_size)
+            .eq(other.iter().take(cmp_size))
+    }
+}
+impl<T: Eq> Eq for ThunkList<'_, T> {}
+
 pub struct Iter<'r, T>(&'r NodePtr<'r, T>);
 impl<'r, T> Iterator for Iter<'r, T> {
     type Item = &'r ThunkAny<'r, T>;
@@ -750,5 +816,88 @@ mod tests {
         assert_eq!(take_nc(&list, 25), 
             [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
         );
+    }
+
+    #[test]
+    fn len_test() {
+        // let a = 0:a;
+        let list01 = ThunkList::repeat(ThunkAny::of(0));
+        assert_eq!(list01.list_len(), (0, 1));
+
+        // let b = 3:2:1:0:b;
+        let (next, list) = ThunkList::raw_cons(ThunkAny::of(0usize));
+        let list04 = ThunkList::from(([3, 2, 1], list));
+        next.bind(&list04);
+        assert_eq!(list04.list_len(), (0, 4));
+        
+        // let c = 4:5:6:b;
+        let list34 = ThunkList::from(([4, 5, 6], list04));
+        assert_eq!(list34.list_len(), (3, 4));
+        
+        // let d = [0, 1, 2, 3];
+        let list40 = ThunkList::from_iter(0..4);
+        assert_eq!(list40.list_len(), (4, 0));
+        
+        // let e = [];
+        let list00 = ThunkList::from_iter(0..0);
+        assert_eq!(list00.list_len(), (0, 0));
+
+        // this tests adding extra els, which aren't the same ref 
+        // and can't be considered the same.
+        let (next, list) = ThunkList::raw_cons(ThunkAny::of(0usize));
+        let list04a = ThunkList::from(([3, 2, 1], list));
+        next.bind(&list04a);
+        let list04a = ThunkList::from(([3, 2, 1, 0], list04a));
+        assert_eq!(list04a.list_len(), (4, 4));
+    }
+    
+    #[test]
+    fn eq_test() {
+        // let a1 = 0:a1;
+        // let a2 = 0:a2;
+        // a1 == a2
+        let list01a = ThunkList::repeat(ThunkAny::of(0));
+        let list01b = ThunkList::repeat(ThunkAny::of(0));
+        assert_eq!(list01a, list01b);
+        
+        // let b = 1:b;
+        // a1 != b
+        let list01c = ThunkList::repeat(ThunkAny::of(1));
+        assert_ne!(list01a, list01c);
+        
+        // let c = 1:a1;
+        // a2 != c
+        // b != c
+        let list11a = ThunkList::cons_known(1, list01a);
+        assert_ne!(list01b, list11a);
+        assert_ne!(list01c, list11a);
+        
+        // let d = 1:a2;
+        // c == d
+        let list11b = ThunkList::cons_known(1, list01b);
+        assert_eq!(list11a, list11b);
+
+        // add extra elements on one side, remove extra elements on the other, what happens?
+        let (next, list) = ThunkList::raw_cons(ThunkAny::of(0usize));
+        let list03a = ThunkList::from(([3, 2, 1], list));
+        next.bind(&list03a);
+        
+        let (_, right) = list03a.clone().split_at(1);
+        let list03b = ThunkList::cons_known(3, right);
+        assert_eq!(list03a.list_len(), (0, 4));
+        assert_eq!(list03b.list_len(), (1, 4));
+        assert_eq!(list03a, list03b);
+
+        // long
+        let (next, list) = ThunkList::raw_cons(ThunkAny::of(0usize));
+        let list03a = ThunkList::from(([2, 1], list));
+        next.bind(&list03a);
+        let (next, list) = ThunkList::raw_cons(ThunkAny::of(0usize));
+        let list03b = ThunkList::from(([2, 1, 0, 2, 1], list));
+        next.bind(&list03b);
+
+        assert_eq!(list03a.list_len(), (0, 3));
+        assert_eq!(list03b.list_len(), (0, 6));
+        assert_eq!(list03a, list03b);
     }
 }
