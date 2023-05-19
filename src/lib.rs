@@ -204,6 +204,34 @@ impl<F: Thunkable> Thunk<F> {
         self.inner.into_inner()
     }
 }
+impl<F: Thunkable> PartialEq for Thunk<F> 
+    where F::Item: PartialEq
+{
+    /// This function will resolve the thunks and checks if they are equal.
+    fn eq(&self, other: &Self) -> bool {
+        self.force() == other.force()
+    }
+}
+impl<F: Thunkable> Eq for Thunk<F> 
+    where F::Item: Eq
+{}
+impl<F: Thunkable> PartialOrd for Thunk<F>
+    where F::Item: PartialOrd
+{
+    /// This function will resolve the thunks and compare them.
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        self.force().partial_cmp(other.force())
+    }
+}
+impl<F: Thunkable> Ord for Thunk<F>
+    where F::Item: Ord
+{
+    /// This function will resolve the thunks and compare them.
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        self.force().cmp(other.force())
+    }
+}
+
 impl<F: Thunkable> Thunkable for Thunk<F> {
     type Item = F::Item;
 
@@ -240,11 +268,7 @@ impl<T: Default> Default for Thunk<fn() -> T> {
         Thunk::new(Default::default)
     }
 }
-// impl<'a, T: Default + 'a> Default for ThunkAny<'a, T> {
-//     fn default() -> Self {
-//         Thunk::<fn() -> T>::default().boxed()
-//     }
-// }
+
 /// Similar to Thunkable but using a &mut self binding.
 /// The ThunkDrop object should not be used afterwards.
 trait ThunkDrop {
@@ -319,7 +343,6 @@ impl<'a, T> Drop for ThunkBox<'a, T> {
     }
 }
 
-// #[derive(Clone)]
 pub struct ThunkAny<'a, T> {
     inner: CovOnceCell<T, 32>, // this is invalid
     init: TakeCell<ThunkBox<'a, T>, 16>
@@ -420,6 +443,30 @@ impl<'a, T: std::fmt::Debug> std::fmt::Debug for ThunkAny<'a, T> {
             .field("inner", &self.inner.get())
             .field("init", &"..")
             .finish()
+    }
+}
+impl<'a, T: PartialEq> PartialEq for ThunkAny<'a, T> {
+    /// This function will resolve the thunks and checks if they are equal.
+    fn eq(&self, other: &Self) -> bool {
+        self.force() == other.force()
+    }
+}
+impl<'a, T: Eq> Eq for ThunkAny<'a, T> {}
+impl<'a, T: PartialOrd> PartialOrd for ThunkAny<'a, T> {
+    /// This function will resolve the thunks and compare them.
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        self.force().partial_cmp(other.force())
+    }
+}
+impl<'a, T: Ord> Ord for ThunkAny<'a, T> {
+    /// This function will resolve the thunks and compare them.
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        self.force().cmp(other.force())
+    }
+}
+impl<'a, T: Default + 'a> Default for ThunkAny<'a, T> {
+    fn default() -> Self {
+        ThunkBox::new(Default::default).into_thunk_any()
     }
 }
 
