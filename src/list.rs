@@ -606,19 +606,12 @@ mod tests {
         let mut ctr = 0usize;
         {
             let lst = ThunkList::iterate_known(|| {ctr += 1; Some(dbg!(ctr))});
-            println!("{:?}", take_nc(&lst, 1));
-            println!("{:?}", take_nc(&lst, 5));
-            println!("{:?}", take_nc(&lst, 10));
+            assert_eq!(take_nc(&lst, 1), [1]);
+            assert_eq!(take_nc(&lst, 5), [1, 2, 3, 4, 5]);
+            assert_eq!(take_nc(&lst, 10), [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]);
         }
         ctr += 1;
-        println!("{ctr}");
-    }
-
-    #[test]
-    fn iterate2() {
-        let lst = ThunkList::from_iter(0..10);
-        println!("{:?}", lst.get_strict(1));
-        println!("{:?}", lst.get_strict(5));
+        assert_eq!(ctr, 11);
     }
 
     #[test]
@@ -657,13 +650,13 @@ mod tests {
             })
             .collect();
 
-        println!("{:?}", list.get_strict(14));
-        println!("{:?}", list.get_strict(3));
-        println!("{:?}", list.get_strict(12));
-        println!("{:?}", list.get_strict(2));
-        println!("{:?}", list.get_strict(4));
-        println!("{:?}", list.get_strict(9));
-        println!("{:?}", list.get_strict(1));
+        assert_eq!(list.get_strict(14), Some(&28));
+        assert_eq!(list.get_strict(3),  Some(&6));
+        assert_eq!(list.get_strict(12), Some(&24));
+        assert_eq!(list.get_strict(2),  Some(&4));
+        assert_eq!(list.get_strict(4),  Some(&8));
+        assert_eq!(list.get_strict(9),  Some(&18));
+        assert_eq!(list.get_strict(1),  Some(&2));
     }
 
     #[test]
@@ -678,9 +671,11 @@ mod tests {
             })
             .collect();
 
-        let foldy = superand
-            .foldr(|t, u| *t.force() && u.dethunk(), ThunkAny::of(true));
-        println!("{:?}", foldy.force());
+        let foldy = superand.foldr(
+            |t, u| *t.force() && u.dethunk(), 
+            ThunkAny::of(true)
+        );
+        assert!(!*foldy.force());
 
         let list: ThunkList<usize> = (1..=100).collect();
 
@@ -688,7 +683,12 @@ mod tests {
             |acc, cv| ThunkList::cons_known(*acc.force(), cv.dethunk()), 
             ThunkAny::of(ThunkList::new())
         );
-        println!("{:?}", list2.dethunk());
+        assert!({
+            list2.force()
+                .iter_strict()
+                .copied()
+                .eq(1..=100)
+        });
         
         // let list3 = ThunkList::repeat(ThunkAny::<usize>::of(0));
         // let list4 = list3.foldr(
