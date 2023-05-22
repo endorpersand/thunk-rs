@@ -2,7 +2,7 @@ use std::marker::PhantomData;
 use std::mem::ManuallyDrop;
 use std::rc::Rc;
 
-use crate::{Thunkable, ThunkAny};
+use crate::ThunkAny;
 
 /// Checks if the given `Rc<T>` points to a reference cycle of `Rc<T>`s.
 /// The `f` callback indicates how to access the next `Rc<T>` in the sequence.
@@ -224,19 +224,7 @@ impl<'a, T> ThunkList<'a, T> {
     pub fn cons_known(t: T, this: Self) -> ThunkList<'a, T> {
         ThunkList::cons(ThunkAny::of(t), this)
     }
-    /// Constructs a list using two lazy parameters.
-    pub fn cons_lazy(f: ThunkAny<'a, T>, this: ThunkAny<'a, Self>) -> ThunkList<'a, T> {
-        let node = Node {
-            val: Rc::new(f),
-            next: NodePtr::from({
-                    crate::ThunkBox::new(|| {
-                    this.resolve().head.force().cloned()
-                }).into_thunk_any()
-            }),
-        };
 
-        ThunkList { head: NodePtr::from(node) }
-    }
     /// A raw version of [`ThunkList::cons`].
     /// 
     /// If cons is considered to take in a head element and a tail list (`head : tail`),
@@ -314,16 +302,11 @@ impl<'a, T> ThunkList<'a, T> {
     /// 
     /// This is a strict operation and will immediately split the list.
     pub fn split_first(self) -> Option<(Rc<ThunkAny<'a, T>>, ThunkList<'a, T>)> {
-        let node = match Rc::try_unwrap(self.head.into_inner()?) {
-            Ok(t) => t.dethunk(),
-            Err(e) => e.force().clone(),
-        }?;
-
-        let Node { val, next } = node;
+        let Node { val, next } = self.head.into_inner()?.unwrap_or_clone().dethunk()?;
         Some((val, ThunkList { head: next }))
     }
 
-    fn raw_split_at(self, n: usize) -> (ThunkList<'a, T>, TailPtr<'a, T>, ThunkList<'a, T>) {
+    fn cursor(self, n: usize) -> (ThunkList<'a, T>, TailPtr<'a, T>, ThunkList<'a, T>) {
         let mut tail = TailPtr::new();
         let left = ThunkList { head: tail.as_node_ptr() };
         let mut right = self;
@@ -343,12 +326,12 @@ impl<'a, T> ThunkList<'a, T> {
         (left, tail, right)
     }
     pub fn split_at(self, n: usize) -> (ThunkList<'a, T>, ThunkList<'a, T>) {
-        let (left, ltail, right) = self.raw_split_at(n);
+        let (left, ltail, right) = self.cursor(n);
         ltail.close();
         (left, right)
     }
     pub fn insert(self, n: usize, t: ThunkAny<'a, T>) -> ThunkList<'a, T> {
-        let (left, ltail, right) = self.raw_split_at(n);
+        let (left, ltail, right) = self.cursor(n);
         ltail.bind(&ThunkList::cons(t, right));
         left
     }
@@ -457,8 +440,23 @@ impl<'a, T: std::fmt::Debug> std::fmt::Debug for ThunkList<'a, T> {
             .finish()
     }
 }
+impl<'a, T> From<ThunkAny<'a, ThunkList<'a, T>>> for ThunkList<'a, T> {
+    /// Creates a new ThunkList from a lazily evaluated ThunkList.
+    ///
+    /// This does not evaluate the list.
+    /// This should be used instead of [`ThunkAny::dethunk`] in situations
+    /// where the list does not need to be resolved.
+    fn from(thunk: ThunkAny<'a, ThunkList<'a, T>>) -> Self {
+        ThunkList {
+            head: NodePtr::from({
+                crate::ThunkBox::new(|| {
+                    thunk.dethunk().head.force().cloned()
+                }).into_thunk_any()
+            })
+        }
+    }
+}
 
-#[must_use = "unconsumed TailPtr leads to broken lists"]
 pub struct TailPtr<'a, T> {
     ptr: Rc<MaybeNode<'a, T>>,
     // Force invariance on 'a, T
@@ -784,7 +782,7 @@ mod tests {
         let list: ThunkList<usize> = (1..=100).collect();
 
         let list2 = list.foldr(
-            |acc, cv| ThunkList::cons_lazy(acc.unwrap_or_clone(), cv), 
+            |acc, cv| ThunkList::cons(acc.unwrap_or_clone(), cv.into()), 
             ThunkAny::of(ThunkList::new())
         );
         assert!({
@@ -796,7 +794,7 @@ mod tests {
 
         let list3: ThunkList<usize> = ThunkList::repeat(ThunkAny::of(0));
         let list4 = list3.foldr(
-            |acc, cv| ThunkList::cons_lazy(acc.unwrap_or_clone(), cv), 
+            |acc, cv| ThunkList::cons(acc.unwrap_or_clone(), cv.into()), 
             ThunkAny::of(ThunkList::new())
         ).dethunk();
         let vec4 = take_nc(&list4, 25);
