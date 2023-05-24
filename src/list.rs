@@ -272,19 +272,21 @@ impl<'a, T> ThunkList<'a, T> {
     }
     /// Reverses the list.
     /// 
-    /// This is a strict operation and will immediately reverse the entire list.
+    /// This will hang when this list is resolved if the list is infinite.
     pub fn reverse(self) -> ThunkList<'a, T> {
-        let mut lst = self;
-        let mut rev = NodePtr(None);
-
-        while let Some((el, rest)) = lst.split_first() {
-            lst = rest;
+        crate::ThunkBox::new(|| {
+            let mut lst = self;
+            let mut rev = NodePtr(None);
+    
+            while let Some((val, rest)) = lst.split_first() {
+                lst = rest;
+                
+                let node = Node { val, next: rev };
+                rev = NodePtr::from(node);
+            }
             
-            let node = Node {val: el, next: rev };
-            rev = NodePtr::from(node);
-        }
-        
-        ThunkList { head: rev }
+            ThunkList { head: rev }
+        }).into_thunk_any().into()
     }
     /// Creates a list where the provided thunk element is repeated infinitely.
     /// 
