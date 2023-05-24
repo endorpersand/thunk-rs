@@ -332,11 +332,11 @@ impl<'a, T> ThunkList<'a, T> {
         fn foldr_node<'a, T, U, F>(nptr: NodePtr<'a, T>, mut f: F, base: ThunkAny<'a, U>) -> ThunkAny<'a, U>
             where F: FnMut(Rc<ThunkAny<'a, T>>, ThunkAny<'a, U>) -> U + Copy + 'a
         {
-            let Some(rc) = nptr.into_inner() else { return base };
             crate::ThunkBox::new(move || {
+                let Some(rc) = nptr.into_inner() else { return base.dethunk() };
                 let Some(node) = rc.dethunk_or_clone() else { return base.dethunk() };
                 let Node { val, next } = node;
-
+    
                 let rhs = foldr_node(next, f, base);
                 f(val, rhs)
             }).into_thunk_any()
@@ -585,7 +585,7 @@ impl<'a, T, const N: usize> From<([T; N], ThunkList<'a, T>)> for ThunkList<'a, T
 #[cfg(test)]
 #[allow(dead_code)]
 mod tests {
-    use std::rc::Rc;
+    use std::rc::{Rc, Weak};
 
     use crate::ThunkAny;
 
@@ -602,7 +602,7 @@ mod tests {
             .cloned()
             .collect()
     }
-    fn examine_rc_path<T>(weak: &std::rc::Weak<super::MaybeNode<T>>, ct: usize) {
+    fn examine_rc_path<T>(weak: &Weak<super::MaybeNode<T>>, ct: usize) {
         fn get_next<'a, 'b, T>(t: &'b super::MaybeNode<'a, T>) -> Option<&'b Rc<super::MaybeNode<'a, T>>> {
             t.try_get()?.as_ref()?.next.as_rc()
         }
@@ -625,6 +625,10 @@ mod tests {
             }
         }
     }
+    fn get_weak_head<'a, T>(list: &ThunkList<'a, T>) -> Weak<super::MaybeNode<'a, T>> {
+        Rc::downgrade(list.head.as_rc().unwrap())
+    }
+
     #[test]
     fn list_to_iter() {
         let c = ThunkList::from([2usize, 1, 0]);
@@ -653,7 +657,7 @@ mod tests {
         {
             const N: usize = 13;
             let lst = ThunkList::repeat(ThunkAny::of(N)); // [N, ...]
-            let ptr = Rc::downgrade(lst.head.as_rc().unwrap());
+            let ptr = get_weak_head(&lst);
     
             let first_ten = take_nc(&lst, 10);
             assert_eq!(first_ten, [N; 10]);
@@ -666,7 +670,7 @@ mod tests {
         
         {
             let (next, lst2) = ThunkList::raw_cons(ThunkAny::of(0usize));
-            let ptr = Rc::downgrade(lst2.head.as_rc().unwrap());
+            let ptr = get_weak_head(&lst2);
     
             let lst = ThunkList::from(([3, 2, 1], lst2.clone()));
             next.bind(&lst);
@@ -784,6 +788,7 @@ mod tests {
             |acc, cv| ThunkList::cons(acc.unwrap_or_clone(), cv.into()), 
             ThunkAny::of(ThunkList::new())
         ).dethunk();
+
         let vec4 = take_nc(&list4, 25);
         assert_eq!(vec4, [0; 25]);
     }
