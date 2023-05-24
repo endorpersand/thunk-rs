@@ -97,14 +97,6 @@ struct Node<'a, T> {
     next: NodePtr<'a, T>
 }
 
-impl<'a, T> Node<'a, T> {
-    pub fn tailed(val: Rc<ThunkAny<'a, T>>) -> (TailPtr<'a, T>, Node<'a, T>) {
-        let tail = TailPtr::new();
-        let node = Node { val, next: tail.as_node_ptr() };
-
-        (tail, node)
-    }
-}
 /// Wrapper holding either null or an Rc ptr pointing to a Node thunk.
 /// 
 /// When dropped, this breaks any isolated node cycles.
@@ -233,8 +225,13 @@ impl<'a, T> ThunkList<'a, T> {
     /// 
     /// The tail can be set to a list via [`TailPtr::bind`].
     pub fn raw_cons(head: ThunkAny<'a, T>) -> (TailPtr<'a, T>, ThunkList<'a, T>) {
-        let (tail, node) = Node::tailed(Rc::new(head));
-        (tail, ThunkList { head: NodePtr::from(node) })
+        let tail = TailPtr::new();
+        let node = NodePtr::from(Node {
+            val: Rc::new(head),
+            next: tail.as_node_ptr(),
+        });
+
+        (tail, ThunkList { head: node })
     }
 
     /// Adds a pointer to the end of the list.
@@ -314,10 +311,7 @@ impl<'a, T> ThunkList<'a, T> {
         for _ in 0..n {
             if let Some((val, rest)) = right.split_first() {
                 right = rest;
-
-                let (new_tail, node) = Node::tailed(val);
-                tail.bind(&ThunkList { head: NodePtr::from(node) });
-                tail = new_tail;
+                tail.append(val);
             } else {
                 return (left, tail, ThunkList::new());
             }
@@ -413,20 +407,15 @@ impl<'a, T> ThunkList<'a, T> {
         ThunkList { head: NodePtr::from(iterate_node(f)) }
     }
     pub fn iterate_strict(mut f: impl FnMut() -> Option<ThunkAny<'a, T>>) -> ThunkList<'a, T> {
-        match f() {
-            Some(el) => {
-                let (mut next, lst) = ThunkList::raw_cons(el);
-                while let Some(el) = f() {
-                    let (next1, lst1) = ThunkList::raw_cons(el);
-                    next.bind(&lst1);
-                    next = next1;
-                }
-                next.close();
+        let mut tail = TailPtr::new();
+        let lst = ThunkList { head: tail.as_node_ptr() };
 
-                lst
-            }
-            None => ThunkList::new()
+        while let Some(el) = f() {
+            tail.append(Rc::new(el));
         }
+        
+        tail.close();
+        lst
     }
     pub fn from_iter_lazy<I: IntoIterator<Item=ThunkAny<'a, T>> + 'a>(iter: I) -> ThunkList<'a, T> {
         let mut it = iter.into_iter();
@@ -473,10 +462,19 @@ impl<'a, T> TailPtr<'a, T> {
     fn as_node_ptr(&self) -> NodePtr<'a, T> {
         NodePtr::from(Rc::clone(&self.ptr))
     }
+
+    fn append(&mut self, val: Rc<ThunkAny<'a, T>>) -> bool {
+        let tail = TailPtr::new();
+        let node = Node { val, next: tail.as_node_ptr() };
+
+        unsafe {
+            std::mem::replace(self, tail).ptr.set(Some(node)).is_ok()
+        }
+    }
     pub fn bind(self, l: &ThunkList<'a, T>) -> bool {
         let val = l.head.force().cloned();
 
-        // SAFETY: LPtr is invariant over Node<'a, T>, 
+        // SAFETY: TailPtr is invariant over Node<'a, T>, 
         // so only pointers of same lifetime are allowed.
         unsafe {
             self.ptr.set(val).is_ok()

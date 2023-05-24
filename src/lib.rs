@@ -409,6 +409,9 @@ impl<'a, T> ThunkAny<'a, T> {
     pub fn try_into_inner(self) -> Option<T> {
         self.inner.into_inner()
     }
+    pub fn fix(f: fn(ThunkAny<'a, T>) -> T) -> ThunkAny<'a, T> {
+        ThunkBox::new(move || f(Self::fix(f))).into_thunk_any()
+    }
 }
 impl<'a, T: Clone> ThunkAny<'a, T> {
     pub fn unwrap_or_clone(self: std::rc::Rc<Self>) -> Self {
