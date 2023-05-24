@@ -337,22 +337,14 @@ impl<'a, T> ThunkList<'a, T> {
         fn foldr_node<'a, T, U, F>(nptr: NodePtr<'a, T>, mut f: F, base: ThunkAny<'a, U>) -> ThunkAny<'a, U>
             where F: FnMut(Rc<ThunkAny<'a, T>>, ThunkAny<'a, U>) -> U + Copy + 'a
         {
-            match nptr.into_inner() {
-                Some(rc) => {
-                    crate::ThunkBox::new(move || {
-                        match rc.dethunk_or_clone() {
-                            Some(node) => {
-                                let Node { val, next } = node;
-    
-                                let rhs = foldr_node(next, f, base);
-                                f(val, rhs)
-                            },
-                            None => base.dethunk()
-                        }
-                    }).into_thunk_any()
-                },
-                None => base,
-            }
+            let Some(rc) = nptr.into_inner() else { return base };
+            crate::ThunkBox::new(move || {
+                let Some(node) = rc.dethunk_or_clone() else { return base.dethunk() };
+                let Node { val, next } = node;
+
+                let rhs = foldr_node(next, f, base);
+                f(val, rhs)
+            }).into_thunk_any()
         }
 
         foldr_node(self.head, f, base)
