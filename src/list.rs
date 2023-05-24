@@ -414,7 +414,7 @@ impl<'a, T> ThunkList<'a, T> {
 impl<'a, T: std::fmt::Debug> std::fmt::Debug for ThunkList<'a, T> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_list()
-            .entries(self.iter().map(ThunkAny::force))
+            .entries(self.iter_strict())
             .finish()
     }
 }
