@@ -117,7 +117,6 @@ impl<'a, T> NodePtr<'a, T> {
     fn force(&self) -> Option<&Node<'a, T>> {
         self.0.as_deref()?.force().as_ref()
     }
-
     fn as_rc(&self) -> Option<&Rc<MaybeNode<'a, T>>> {
         self.0.as_ref()
     }
@@ -237,18 +236,14 @@ impl<'a, T> ThunkList<'a, T> {
     /// Adds a pointer to the end of the list.
     pub fn raw_append(self) -> (TailPtr<'a, T>, ThunkList<'a, T>) {
         fn insert_end<'a, T>(ptr: NodePtr<'a, T>, end: NodePtr<'a, T>) -> NodePtr<'a, T> {
-            match ptr.into_inner() {
-                Some(rc) => {
-                    NodePtr::from(
-                        crate::ThunkBox::new(|| match rc.dethunk_or_clone() {
-                            Some(Node { val, next }) => Some(Node { val, next: insert_end(next, end) }),
-                            None => end.force().cloned(),
-                        }).into_thunk_any()
-                    )
-                },
-                None => end,
-            }
+            NodePtr::from({
+                crate::ThunkBox::new(|| match ptr.into_inner().and_then(ThunkAny::dethunk_or_clone) {
+                    Some(Node { val, next }) => Some(Node { val, next: insert_end(next, end) }),
+                    None => end.force().cloned()
+                }).into_thunk_any()
+            })
         }
+
         let tail = TailPtr::new();
         let head = insert_end(self.head, tail.as_node_ptr());
         (tail, ThunkList { head })
