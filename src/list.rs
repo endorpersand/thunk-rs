@@ -242,16 +242,12 @@ impl<'a, T> ThunkList<'a, T> {
         fn insert_end<'a, T>(ptr: NodePtr<'a, T>, end: NodePtr<'a, T>) -> NodePtr<'a, T> {
             match ptr.into_inner() {
                 Some(rc) => {
-                    match rc.unwrap_or_clone().dethunk() {
-                        Some(Node { val, next }) => {
-                            NodePtr::from(
-                                crate::ThunkBox::new(move || {
-                                    Some(Node { val, next: insert_end(next, end)})
-                                }).into_thunk_any()
-                            )
-                        },
-                        None => end,
-                    }
+                    NodePtr::from(
+                        crate::ThunkBox::new(|| match rc.dethunk_or_clone() {
+                            Some(Node { val, next }) => Some(Node { val, next: insert_end(next, end) }),
+                            None => end.force().cloned(),
+                        }).into_thunk_any()
+                    )
                 },
                 None => end,
             }
@@ -272,6 +268,8 @@ impl<'a, T> ThunkList<'a, T> {
         self.iter().next()
     }
     /// Gets the last thunk in the list.
+    /// 
+    /// This will hang if the list is infinite.
     pub fn last(&self) -> Option<&ThunkAny<T>> {
         self.iter().last()
     }
@@ -292,6 +290,8 @@ impl<'a, T> ThunkList<'a, T> {
         ThunkList { head: rev }
     }
     /// Creates a list where the provided thunk element is repeated infinitely.
+    /// 
+    /// This is a lazy operation.
     pub fn repeat(f: ThunkAny<'a, T>) -> ThunkList<'a, T> {
         let (next, lst) = ThunkList::raw_cons(f);
         next.bind(&lst);
@@ -302,7 +302,7 @@ impl<'a, T> ThunkList<'a, T> {
     /// 
     /// This is a strict operation and will immediately split the list.
     pub fn split_first(self) -> Option<(Rc<ThunkAny<'a, T>>, ThunkList<'a, T>)> {
-        let Node { val, next } = self.head.into_inner()?.unwrap_or_clone().dethunk()?;
+        let Node { val, next } = self.head.into_inner()?.dethunk_or_clone()?;
         Some((val, ThunkList { head: next }))
     }
 
@@ -344,7 +344,7 @@ impl<'a, T> ThunkList<'a, T> {
             match nptr.into_inner() {
                 Some(rc) => {
                     crate::ThunkBox::new(move || {
-                        match rc.unwrap_or_clone().dethunk() {
+                        match rc.dethunk_or_clone() {
                             Some(node) => {
                                 let Node { val, next } = node;
     
@@ -371,7 +371,7 @@ impl<'a, T> ThunkList<'a, T> {
     pub fn get(&self, n: usize) -> Option<&ThunkAny<T>> {
         self.iter().nth(n)
     }
-    /// Gets the strict value at this index.
+    /// Gets the value at this index.
     /// 
     /// This will resolve the value at the index if not already resolved.
     pub fn get_strict(&self, n: usize) -> Option<&T> {
@@ -655,10 +655,10 @@ mod tests {
         assert_eq!(cit.next(), None);
         
         let mut cit = c.into_iter();
-        assert_eq!(cit.next().map(|t| t.unwrap_or_clone().dethunk()), Some(2));
-        assert_eq!(cit.next().map(|t| t.unwrap_or_clone().dethunk()), Some(1));
-        assert_eq!(cit.next().map(|t| t.unwrap_or_clone().dethunk()), Some(0));
-        assert_eq!(cit.next().map(|t| t.unwrap_or_clone().dethunk()), None);
+        assert_eq!(cit.next().map(|t| t.dethunk_or_clone()), Some(2));
+        assert_eq!(cit.next().map(|t| t.dethunk_or_clone()), Some(1));
+        assert_eq!(cit.next().map(|t| t.dethunk_or_clone()), Some(0));
+        assert_eq!(cit.next().map(|t| t.dethunk_or_clone()), None);
     }
 
     #[test]

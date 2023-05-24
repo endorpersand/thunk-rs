@@ -417,6 +417,12 @@ impl<'a, T: Clone> ThunkAny<'a, T> {
             Err(e) => ThunkBox::new(move || e.force().clone()).into_thunk_any(),
         }
     }
+    pub fn dethunk_or_clone(self: std::rc::Rc<Self>) -> T {
+        match std::rc::Rc::try_unwrap(self) {
+            Ok(t) => t.dethunk(),
+            Err(e) => e.force().clone(),
+        }
+    }
 }
 impl<'a, T> Thunkable for ThunkAny<'a, T> {
     type Item = T;
