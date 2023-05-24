@@ -556,7 +556,7 @@ impl<'a, T> IntoIterator for ThunkList<'a, T> {
         IntoIter(Some(self))
     }
 }
-impl<'a, A> FromIterator<A> for ThunkList<'a, A> {
+impl<A> FromIterator<A> for ThunkList<'_, A> {
     fn from_iter<T: IntoIterator<Item = A>>(iter: T) -> Self {
         let mut it = iter.into_iter();
         ThunkList::iterate_strict(move || it.next().map(ThunkAny::of))
