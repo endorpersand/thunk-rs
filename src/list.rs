@@ -234,7 +234,7 @@ impl<'a, T> ThunkList<'a, T> {
             NodePtr::from({
                 crate::ThunkBox::new(|| match ptr.dethunk_inner() {
                     Some(Node { val, next }) => Some(Node { val, next: insert_end(next, end) }),
-                    None => end.force().cloned()
+                    None => end.dethunk_inner()
                 }).into_thunk_any()
             })
         }
@@ -317,8 +317,9 @@ impl<'a, T> ThunkList<'a, T> {
         (left, right)
     }
     pub fn insert(self, n: usize, t: ThunkAny<'a, T>) -> ThunkList<'a, T> {
-        let (left, ltail, right) = self.cursor(n);
-        ltail.bind(&ThunkList::cons(t, right));
+        let (left, mut ltail, right) = self.cursor(n);
+        ltail.append(t);
+        ltail.bind(&right);
         left
     }
     pub fn foldr<U, F>(self, f: F, base: ThunkAny<'a, U>) -> ThunkAny<'a, U> 
@@ -389,13 +390,10 @@ impl<'a, T> ThunkList<'a, T> {
 
         ThunkList { head: NodePtr::from(iterate_node(f)) }
     }
-    pub fn iterate_strict(mut f: impl FnMut() -> Option<ThunkAny<'a, T>>) -> ThunkList<'a, T> {
+    pub fn iterate_strict(f: impl FnMut() -> Option<ThunkAny<'a, T>>) -> ThunkList<'a, T> {
         let (mut tail, lst) = ThunkList::tailed();
 
-        while let Some(el) = f() {
-            tail.append(el);
-        }
-        
+        tail.extend(std::iter::from_fn(f));
         tail.close();
         lst
     }
@@ -421,7 +419,7 @@ impl<'a, T> From<ThunkAny<'a, ThunkList<'a, T>>> for ThunkList<'a, T> {
         ThunkList {
             head: NodePtr::from({
                 crate::ThunkBox::new(|| {
-                    thunk.dethunk().head.force().cloned()
+                    thunk.dethunk().head.dethunk_inner()
                 }).into_thunk_any()
             })
         }
@@ -473,6 +471,20 @@ impl<'a, T> TailPtr<'a, T> {
         // SAFETY: None is not dependent on lifetime.
         unsafe {
             self.ptr.set(None).is_ok()
+        }
+    }
+}
+impl<A> Extend<A> for TailPtr<'_, A> {
+    fn extend<T: IntoIterator<Item = A>>(&mut self, iter: T) {
+        for el in iter {
+            self.append(ThunkAny::of(el));
+        }
+    }
+}
+impl<'a, A> Extend<ThunkAny<'a, A>> for TailPtr<'a, A> {
+    fn extend<T: IntoIterator<Item = ThunkAny<'a, A>>>(&mut self, iter: T) {
+        for el in iter {
+            self.append(el);
         }
     }
 }
