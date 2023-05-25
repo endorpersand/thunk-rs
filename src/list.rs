@@ -117,6 +117,10 @@ impl<'a, T> NodePtr<'a, T> {
     fn force(&self) -> Option<&Node<'a, T>> {
         self.0.as_deref()?.force().as_ref()
     }
+    /// Dethunk inner
+    fn dethunk_inner(self) -> Option<Node<'a, T>> {
+        self.into_inner()?.dethunk_or_clone()
+    }
     fn as_rc(&self) -> Option<&Rc<MaybeNode<'a, T>>> {
         self.0.as_ref()
     }
@@ -228,7 +232,7 @@ impl<'a, T> ThunkList<'a, T> {
     pub fn raw_append(self) -> (TailPtr<'a, T>, ThunkList<'a, T>) {
         fn insert_end<'a, T>(ptr: NodePtr<'a, T>, end: NodePtr<'a, T>) -> NodePtr<'a, T> {
             NodePtr::from({
-                crate::ThunkBox::new(|| match ptr.into_inner().and_then(ThunkAny::dethunk_or_clone) {
+                crate::ThunkBox::new(|| match ptr.dethunk_inner() {
                     Some(Node { val, next }) => Some(Node { val, next: insert_end(next, end) }),
                     None => end.force().cloned()
                 }).into_thunk_any()
@@ -288,7 +292,7 @@ impl<'a, T> ThunkList<'a, T> {
     /// 
     /// This is a strict operation and will immediately split the list.
     pub fn split_first(self) -> Option<(Rc<ThunkAny<'a, T>>, ThunkList<'a, T>)> {
-        let Node { val, next } = self.head.into_inner()?.dethunk_or_clone()?;
+        let Node { val, next } = self.head.dethunk_inner()?;
         Some((val, ThunkList { head: next }))
     }
 
@@ -324,8 +328,7 @@ impl<'a, T> ThunkList<'a, T> {
             where F: FnMut(Rc<ThunkAny<'a, T>>, ThunkAny<'a, U>) -> U + Copy + 'a
         {
             crate::ThunkBox::new(move || {
-                let Some(rc) = nptr.into_inner() else { return base.dethunk() };
-                let Some(node) = rc.dethunk_or_clone() else { return base.dethunk() };
+                let Some(node) = nptr.dethunk_inner() else { return base.dethunk() };
                 let Node { val, next } = node;
     
                 let rhs = foldr_node(next, f, base);
