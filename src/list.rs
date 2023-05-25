@@ -216,21 +216,12 @@ impl<'a, T> ThunkList<'a, T> {
         ThunkList::cons(ThunkAny::of(t), this)
     }
 
-    /// A raw version of [`ThunkList::cons`].
-    /// 
-    /// If cons is considered to take in a head element and a tail list (`head : tail`),
-    /// this function accepts the head element and returns a not-yet-defined tail 
-    /// and the resultant `head : tail` list.
-    /// 
-    /// The tail can be set to a list via [`TailPtr::bind`].
-    pub fn raw_cons(head: ThunkAny<'a, T>) -> (TailPtr<'a, T>, ThunkList<'a, T>) {
+    /// Creates a list whose tail can be edited.
+    pub fn tailed() -> (TailPtr<'a, T>, ThunkList<'a, T>) {
         let tail = TailPtr::new();
-        let node = NodePtr::from(Node {
-            val: Rc::new(head),
-            next: tail.as_node_ptr(),
-        });
+        let list = ThunkList { head: tail.as_node_ptr() };
 
-        (tail, ThunkList { head: node })
+        (tail, list)
     }
 
     /// Adds a pointer to the end of the list.
@@ -287,8 +278,9 @@ impl<'a, T> ThunkList<'a, T> {
     /// 
     /// This is a lazy operation.
     pub fn repeat(f: ThunkAny<'a, T>) -> ThunkList<'a, T> {
-        let (next, lst) = ThunkList::raw_cons(f);
-        next.bind(&lst);
+        let (mut tail, lst) = ThunkList::tailed();
+        tail.append(f);
+        tail.bind(&lst);
         
         lst
     }
@@ -301,14 +293,13 @@ impl<'a, T> ThunkList<'a, T> {
     }
 
     fn cursor(self, n: usize) -> (ThunkList<'a, T>, TailPtr<'a, T>, ThunkList<'a, T>) {
-        let mut tail = TailPtr::new();
-        let left = ThunkList { head: tail.as_node_ptr() };
+        let (mut tail, left) = ThunkList::tailed();
         let mut right = self;
 
         for _ in 0..n {
             if let Some((val, rest)) = right.split_first() {
                 right = rest;
-                tail.append(val);
+                tail.raw_append(val);
             } else {
                 return (left, tail, ThunkList::new());
             }
@@ -396,11 +387,10 @@ impl<'a, T> ThunkList<'a, T> {
         ThunkList { head: NodePtr::from(iterate_node(f)) }
     }
     pub fn iterate_strict(mut f: impl FnMut() -> Option<ThunkAny<'a, T>>) -> ThunkList<'a, T> {
-        let mut tail = TailPtr::new();
-        let lst = ThunkList { head: tail.as_node_ptr() };
+        let (mut tail, lst) = ThunkList::tailed();
 
         while let Some(el) = f() {
-            tail.append(Rc::new(el));
+            tail.append(el);
         }
         
         tail.close();
@@ -452,7 +442,8 @@ impl<'a, T> TailPtr<'a, T> {
         NodePtr::from(Rc::clone(&self.ptr))
     }
 
-    fn append(&mut self, val: Rc<ThunkAny<'a, T>>) -> bool {
+    /// Appends an Rc value into the node.
+    fn raw_append(&mut self, val: Rc<ThunkAny<'a, T>>) -> bool {
         let tail = TailPtr::new();
         let node = Node { val, next: tail.as_node_ptr() };
 
@@ -460,6 +451,12 @@ impl<'a, T> TailPtr<'a, T> {
             std::mem::replace(self, tail).ptr.set(Some(node)).is_ok()
         }
     }
+
+    /// Appends a thunk value to the current tail.
+    pub fn append(&mut self, val: ThunkAny<'a, T>) -> bool {
+        self.raw_append(Rc::new(val))
+    }
+
     pub fn bind(self, l: &ThunkList<'a, T>) -> bool {
         let val = l.head.force().cloned();
 
@@ -653,7 +650,7 @@ mod tests {
     }
 
     #[test]
-    fn raw_cons_test() {
+    fn tail_ptr_test() {
         {
             const N: usize = 13;
             let lst = ThunkList::repeat(ThunkAny::of(N)); // [N, ...]
@@ -669,11 +666,11 @@ mod tests {
         }
         
         {
-            let (next, lst2) = ThunkList::raw_cons(ThunkAny::of(0usize));
+            let (tail, lst2) = ThunkList::tailed();
             let ptr = get_weak_head(&lst2);
     
-            let lst = ThunkList::from(([3, 2, 1], lst2.clone()));
-            next.bind(&lst);
+            let lst = ThunkList::from(([3, 2, 1, 0], lst2.clone()));
+            tail.bind(&lst);
             
             let first_ten = take_nc(&lst, 10);
             assert_eq!(first_ten, [3, 2, 1, 0, 3, 2, 1, 0, 3, 2]);
@@ -722,11 +719,14 @@ mod tests {
     }
 
     #[test]
-    fn raw_cons_lifetimes() {
-        let (_ptr1, list1) = ThunkList::raw_cons(ThunkAny::of("hello"));
+    fn tail_ptr_lifetimes() {
+        let (mut ptr1, list1) = ThunkList::tailed();
+        ptr1.append(ThunkAny::of("hello"));
+
         {
             let a = String::from("hello");
-            let (ptr2, list2) = ThunkList::raw_cons(ThunkAny::of(a.as_str()));
+            let (mut ptr2, list2) = ThunkList::tailed();
+            ptr2.append(ThunkAny::of(a.as_str()));
             ptr2.bind(&list1);
             std::mem::drop(list2);
         }
@@ -826,9 +826,9 @@ mod tests {
         assert_eq!(list01.list_len(), (0, 1));
 
         // let b = 3:2:1:0:b;
-        let (next, list) = ThunkList::raw_cons(ThunkAny::of(0usize));
-        let list04 = ThunkList::from(([3, 2, 1], list));
-        next.bind(&list04);
+        let (ptr, list) = ThunkList::tailed();
+        let list04 = ThunkList::from(([3, 2, 1, 0], list));
+        ptr.bind(&list04);
         assert_eq!(list04.list_len(), (0, 4));
         
         // let c = 4:5:6:b;
@@ -845,9 +845,9 @@ mod tests {
 
         // this tests adding extra els, which aren't the same ref 
         // and can't be considered the same.
-        let (next, list) = ThunkList::raw_cons(ThunkAny::of(0usize));
-        let list04a = ThunkList::from(([3, 2, 1], list));
-        next.bind(&list04a);
+        let (ptr, list) = ThunkList::tailed();
+        let list04a = ThunkList::from(([3, 2, 1, 0], list));
+        ptr.bind(&list04a);
         let list04a = ThunkList::from(([3, 2, 1, 0], list04a));
         assert_eq!(list04a.list_len(), (4, 4));
     }
@@ -879,9 +879,9 @@ mod tests {
         assert_eq!(list11a, list11b);
 
         // add extra elements on one side, remove extra elements on the other, what happens?
-        let (next, list) = ThunkList::raw_cons(ThunkAny::of(0usize));
-        let list03a = ThunkList::from(([3, 2, 1], list));
-        next.bind(&list03a);
+        let (ptr, list) = ThunkList::tailed();
+        let list03a = ThunkList::from(([3, 2, 1, 0], list));
+        ptr.bind(&list03a);
         
         let (_, right) = list03a.clone().split_at(1);
         let list03b = ThunkList::cons_known(3, right);
@@ -890,12 +890,12 @@ mod tests {
         assert_eq!(list03a, list03b);
 
         // long
-        let (next, list) = ThunkList::raw_cons(ThunkAny::of(0usize));
-        let list03a = ThunkList::from(([2, 1], list));
-        next.bind(&list03a);
-        let (next, list) = ThunkList::raw_cons(ThunkAny::of(0usize));
-        let list03b = ThunkList::from(([2, 1, 0, 2, 1], list));
-        next.bind(&list03b);
+        let (ptr, list) = ThunkList::tailed();
+        let list03a = ThunkList::from(([2, 1, 0], list));
+        ptr.bind(&list03a);
+        let (ptr, list) = ThunkList::tailed();
+        let list03b = ThunkList::from(([2, 1, 0, 2, 1, 0], list));
+        ptr.bind(&list03b);
 
         assert_eq!(list03a.list_len(), (0, 3));
         assert_eq!(list03b.list_len(), (0, 6));
