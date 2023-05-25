@@ -379,16 +379,18 @@ impl<'a, T> ThunkList<'a, T> {
         ThunkList::iterate(move || f().map(ThunkAny::of))
     }
     pub fn iterate(f: impl FnMut() -> Option<ThunkAny<'a, T>> + 'a) -> ThunkList<'a, T> {
-        fn iterate_node<'a, T>(mut f: impl FnMut() -> Option<ThunkAny<'a, T>> + 'a) -> MaybeNode<'a, T> {
-            crate::ThunkBox::new(|| {
-                Some(Node {
-                    val: Rc::new(f()?),
-                    next: NodePtr::from(iterate_node(f))
-                })
-            }).into_thunk_any()
+        fn iterate_node<'a, T>(mut f: impl FnMut() -> Option<ThunkAny<'a, T>> + 'a) -> NodePtr<'a, T> {
+            NodePtr::from({
+                crate::ThunkBox::new(|| {
+                    Some(Node {
+                        val: Rc::new(f()?),
+                        next: iterate_node(f)
+                    })
+                }).into_thunk_any()
+            })
         }
 
-        ThunkList { head: NodePtr::from(iterate_node(f)) }
+        ThunkList { head: iterate_node(f) }
     }
     pub fn iterate_strict(f: impl FnMut() -> Option<ThunkAny<'a, T>>) -> ThunkList<'a, T> {
         let (mut tail, lst) = ThunkList::tailed();
@@ -527,12 +529,10 @@ impl<'r, T> Iterator for Iter<'r, T> {
     type Item = &'r ThunkAny<'r, T>;
 
     fn next(&mut self) -> Option<Self::Item> {
-        let node = self.0.force()?;
+        let Node { val, next } = self.0.force()?;
         
-        let val = node.val.as_ref();
-        self.0 = &node.next;
-        
-        Some(val)
+        self.0 = next;
+        Some(val.as_ref())
     }
 }
 pub struct IterStrict<'r, T>(&'r NodePtr<'r, T>);
@@ -540,12 +540,10 @@ impl<'r, T> Iterator for IterStrict<'r, T> {
     type Item = &'r T;
 
     fn next(&mut self) -> Option<Self::Item> {
-        let node = self.0.force()?;
+        let Node { val, next } = self.0.force()?;
         
-        let val = node.val.force();
-        self.0 = &node.next;
-        
-        Some(val)
+        self.0 = next;
+        Some(val.force())
     }
 }
 
@@ -554,8 +552,7 @@ impl<'a, T> Iterator for IntoIter<'a, T> {
     type Item = Rc<ThunkAny<'a, T>>;
 
     fn next(&mut self) -> Option<Self::Item> {
-        let t = self.0.take()?;
-        let (head, rest) = t.split_first()?;
+        let (head, rest) = self.0.take()?.split_first()?;
         self.0.replace(rest);
         Some(head)
     }
