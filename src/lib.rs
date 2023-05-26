@@ -5,7 +5,6 @@ mod cell;
 use cell::{TakeCell, CovOnceCell};
 pub use transform::zip;
 
-use std::cell::{OnceCell, Cell};
 use std::marker::PhantomData;
 use std::mem::ManuallyDrop;
 use std::ptr::NonNull;
@@ -75,18 +74,21 @@ impl<T, F: FnOnce() -> T> Thunkable for F {
 }
 
 struct ThunkInner<T, F> {
-    inner: OnceCell<T>,
-    init: Cell<Option<F>>
+    inner: CovOnceCell<T>,
+    init: TakeCell<F>
 }
 impl<T, F> ThunkInner<T, F> {
     fn uninitialized(f: F) -> Self {
-        ThunkInner { inner: OnceCell::new(), init: Cell::new(Some(f)) }
+        ThunkInner { inner: CovOnceCell::new(), init: TakeCell::new(f) }
     }
     fn initialized(t: T) -> Self {
-        ThunkInner { inner: OnceCell::from(t), init: Cell::new(None) }
+        ThunkInner { inner: CovOnceCell::from(t), init: TakeCell::empty() }
     }
 
-    fn force(&self, r: impl FnOnce(F) -> T) -> &T {
+    /// # Safety
+    /// 
+    /// Value returned must match the lifetime this struct had when it was initialized.
+    unsafe fn force(&self, r: impl FnOnce(F) -> T) -> &T {
         self.inner.get_or_init(|| match self.init.take() {
             Some(f) => r(f),
             None => panic!("no initializer"),
@@ -102,7 +104,11 @@ impl<T, F> ThunkInner<T, F> {
     fn into_inner(self) -> Option<T> {
         self.inner.into_inner()
     }
-    fn set(&self, val: T) -> Result<(), T> {
+
+    /// # Safety
+    /// 
+    /// Set value must match the lifetime this struct had when it was initialized.
+    unsafe fn set(&self, val: T) -> Result<(), T> {
         self.init.take();
         self.inner.set(val)
     }
@@ -115,14 +121,8 @@ impl<T: Clone, F: Clone> Clone for ThunkInner<T, F> {
     fn clone(&self) -> Self {
         Self { 
             inner: self.inner.clone(), 
-            init: match self.init.take() {
-                Some(t) => {
-                    let tc = t.clone();
-                    self.init.replace(Some(t));
-                    Cell::new(Some(tc))
-                },
-                None => Cell::new(None),
-        } }
+            init: self.init.clone()
+        }
     }
 }
 impl<T: std::fmt::Debug, F> std::fmt::Debug for ThunkInner<T, F> {
@@ -154,7 +154,11 @@ impl<F: Thunkable> Thunk<F> {
         Thunk { inner: ThunkInner::initialized(t) }
     }
     pub fn force(&self) -> &F::Item {
-        self.inner.force(|f| f.resolve())
+        // SAFETY: F's lifetime matches lifetime of this Thunk at initialization, 
+        // so covariance is preserved
+        unsafe {
+            self.inner.force(|f| f.resolve())
+        }
     }
     pub fn force_mut(&mut self) -> &mut F::Item {
         self.force();
@@ -165,8 +169,23 @@ impl<F: Thunkable> Thunk<F> {
         self.try_into_inner().expect("force should have succeeded")
     }
 
-    pub fn set(&self, val: F::Item) -> Result<(), F::Item> {
+    /// # Safety
+    /// 
+    /// Set value must match the lifetime this struct had when it was initialized.
+    pub unsafe fn set_unchecked(&self, val: F::Item) -> Result<(), F::Item> {
         self.inner.set(val)
+    }
+    /// # Safety
+    /// 
+    /// Set value must match the lifetime this struct had when it was initialized.
+    pub fn set(&self, val: F::Item) -> Result<(), F::Item> 
+        where F::Item: 'static 
+    {
+        // Since F::Item is 'static, this value cannot be dropped before
+        // the cell is dropped.
+        unsafe {
+            self.inner.set(val)
+        }
     }
     pub fn is_initialized(&self) -> bool {
         self.inner.is_initialized()
