@@ -8,6 +8,7 @@ pub use transform::zip;
 use std::marker::PhantomData;
 use std::mem::ManuallyDrop;
 use std::ptr::NonNull;
+use std::rc::Rc;
 
 pub trait Thunkable {
     type Item;
@@ -134,26 +135,15 @@ impl<T: std::fmt::Debug, F> std::fmt::Debug for ThunkInner<T, F> {
     }
 }
 
-fn down<'a>(t: Thunk<&'static (), fn() -> &'static ()>) -> Thunk<&'a (), fn() -> &'a ()> { t }
-fn down2<'a>(t: ThunkInner<&'static (), fn() -> &'static ()>) -> ThunkInner<&'a (), fn() -> &'a ()> { t }
-
 #[derive(Clone)]
 pub struct Thunk<T, F: Thunkable<Item=T>> {
     inner: ThunkInner<T, F>
-}
-impl<T> Thunk<T, fn() -> T> {
-    pub fn undef() -> Self {
-        Thunk::new(|| panic!("undef"))
-    }
-    pub fn of(t: T) -> Self {
-        Thunk::known(t)
-    }
 }
 impl<F: Thunkable> Thunk<F::Item, F> {
     pub fn new(f: F) -> Self {
         Thunk { inner: ThunkInner::uninitialized(f) }
     }
-    pub fn known(t: F::Item) -> Self {
+    pub fn of(t: F::Item) -> Self {
         Thunk { inner: ThunkInner::initialized(t) }
     }
     pub fn force(&self) -> &F::Item {
@@ -197,23 +187,21 @@ impl<F: Thunkable> Thunk<F::Item, F> {
     pub fn boxed<'a>(self) -> ThunkAny<'a, F::Item>
         where F: 'a
     {
-        let inner = CovOnceCell::new();
-        // SAFETY: lifetime matches lifetime on init
-        if let Some(val) = self.inner.inner.into_inner() {
-            unsafe {
-                inner.set(val)
-                    .ok()
-                    .expect("CovOnceCell should not have been initialized");
+        let ThunkInner { inner, init } = self.inner;
+        Thunk {
+            inner: ThunkInner {
+                inner,
+                init: TakeCell::from(init.take().map(Thunkable::into_box))
             }
-        };
-
-            let init = TakeCell::from(
-                self.inner.init
-                    .into_inner()
-                    .map(Thunkable::into_box)
-            );
-            
-            ThunkAny { inner, init }
+        }
+    }
+    pub fn dethunk_or_clone(self: Rc<Self>) -> F::Item 
+        where F::Item: Clone
+    {
+        match Rc::try_unwrap(self) {
+            Ok(t) => t.dethunk(),
+            Err(e) => e.force().clone(),
+        }
     }
 
     pub fn try_get(&self) -> Option<&F::Item> {
@@ -285,7 +273,14 @@ impl<F: Thunkable> std::fmt::Debug for Thunk<F::Item, F>
             .finish()
     }
 }
-impl<T: Default> Default for Thunk<T, fn() -> T> {
+
+pub type ThunkFn<T> = Thunk<T, fn() -> T>;
+impl<T> ThunkFn<T> {
+    pub fn undef() -> Self {
+        Thunk::new(|| panic!("undef"))
+    }
+}
+impl<T: Default> Default for ThunkFn<T> {
     fn default() -> Self {
         Thunk::new(Default::default)
     }
@@ -330,7 +325,7 @@ impl<'a, T> ThunkBox<'a, T> {
 
     /// # Safety
     /// 
-    /// ptr should not be used afterwards
+    /// ThunkBox's ptr should not be used afterwards
     #[allow(clippy::wrong_self_convention)]
     unsafe fn to_tdbox(&mut self) -> Box<dyn ThunkDrop<Item=T> + 'a> {
         // SAFETY: ptr came from Box during initialization
@@ -365,131 +360,23 @@ impl<'a, T> Drop for ThunkBox<'a, T> {
     }
 }
 
-// FIXME: This is equivalent to Thunk<ThunkBox<'a, T>> but covariant.
-// When Thunk is patched to be covariant, this struct can be removed.
-pub struct ThunkAny<'a, T> {
-    inner: CovOnceCell<T>,
-    init: TakeCell<ThunkBox<'a, T>>
-}
+/// A wrapper that ignores differences between Thunk initializers.
+pub type ThunkAny<'a, T> = Thunk<T, ThunkBox<'a, T>>;
+
 impl<'a, T> ThunkAny<'a, T> {
     pub fn undef() -> Self {
         ThunkAny::new((|| panic!("undef")).into_box())
-    }
-    pub fn new(f: ThunkBox<'a, T>) -> Self {
-        ThunkAny { 
-            inner: CovOnceCell::new(),
-            init: TakeCell::new(f)
-        }
-    }
-    pub fn of(t: T) -> Self {
-        ThunkAny { 
-            inner: CovOnceCell::from(t),
-            init: TakeCell::empty() 
-        }
-    }
-    pub fn force(&self) -> &T {
-        // SAFETY: cov met because T, 
-        // ThunkBox have matching variances in initialization
-        unsafe {
-            self.inner.get_or_init(|| match self.init.take() {
-                Some(f) => f.resolve(),
-                None => panic!("no initializer")
-            })
-        }
-    }
-    pub fn force_mut(&mut self) -> &mut T {
-        self.force();
-        self.try_get_mut().expect("force should have succeeded")
-    }
-    pub fn dethunk(self) -> T {
-        self.force();
-        self.try_into_inner().expect("force should have succeeded")
-    }
-
-    /// # Safety
-    /// 
-    /// This function has to meet covariance. Type `T`'s lifetime should
-    /// match the lifetime at initialization of this `ThunkAny`.
-    pub unsafe fn set(&self, val: T) -> Result<(), T> {
-        self.inner.set(val)
-    }
-    pub fn is_initialized(&self) -> bool {
-        self.inner.get().is_some()
-    }
-
-    pub fn try_get(&self) -> Option<&T> {
-        self.inner.get()
-    }
-    pub fn try_get_mut(&mut self) -> Option<&mut T> {
-        self.inner.get_mut()
-    }
-    pub fn try_into_inner(self) -> Option<T> {
-        self.inner.into_inner()
     }
     pub fn fix(f: fn(ThunkAny<'a, T>) -> T) -> ThunkAny<'a, T> {
         ThunkBox::new(move || f(Self::fix(f))).into_thunk_any()
     }
 }
 impl<'a, T: Clone> ThunkAny<'a, T> {
-    pub fn unwrap_or_clone(self: std::rc::Rc<Self>) -> Self {
-        match std::rc::Rc::try_unwrap(self) {
+    pub fn unwrap_or_clone(self: Rc<Self>) -> Self {
+        match Rc::try_unwrap(self) {
             Ok(t) => t,
             Err(e) => ThunkBox::new(move || e.force().clone()).into_thunk_any(),
         }
-    }
-    pub fn dethunk_or_clone(self: std::rc::Rc<Self>) -> T {
-        match std::rc::Rc::try_unwrap(self) {
-            Ok(t) => t.dethunk(),
-            Err(e) => e.force().clone(),
-        }
-    }
-}
-impl<'a, T> Thunkable for ThunkAny<'a, T> {
-    type Item = T;
-
-    fn resolve(self) -> Self::Item {
-        self.dethunk()
-    }
-}
-impl<'a, T> Thunkable for &'a ThunkAny<'a, T> {
-    type Item = &'a T;
-
-    fn resolve(self) -> Self::Item {
-        self.force()
-    }
-}
-impl<'a, T> Thunkable for &'a mut ThunkAny<'a, T> {
-    type Item = &'a mut T;
-
-    fn resolve(self) -> Self::Item {
-        self.force_mut()
-    }
-}
-impl<'a, T: std::fmt::Debug> std::fmt::Debug for ThunkAny<'a, T> {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("ThunkAny")
-            .field("inner", &self.inner.get())
-            .field("init", &"..")
-            .finish()
-    }
-}
-impl<'a, T: PartialEq> PartialEq for ThunkAny<'a, T> {
-    /// This function will resolve the thunks and checks if they are equal.
-    fn eq(&self, other: &Self) -> bool {
-        self.force() == other.force()
-    }
-}
-impl<'a, T: Eq> Eq for ThunkAny<'a, T> {}
-impl<'a, T: PartialOrd> PartialOrd for ThunkAny<'a, T> {
-    /// This function will resolve the thunks and compare them.
-    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
-        self.force().partial_cmp(other.force())
-    }
-}
-impl<'a, T: Ord> Ord for ThunkAny<'a, T> {
-    /// This function will resolve the thunks and compare them.
-    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
-        self.force().cmp(other.force())
     }
 }
 impl<'a, T: Default + 'a> Default for ThunkAny<'a, T> {
@@ -501,7 +388,7 @@ impl<'a, T: Default + 'a> Default for ThunkAny<'a, T> {
 #[cfg(test)]
 mod tests {
     use crate::transform::Seq;
-    use crate::{Thunk, Thunkable};
+    use crate::{Thunk, Thunkable, ThunkFn};
 
     #[test]
     fn thunky() {
@@ -535,7 +422,7 @@ mod tests {
     #[test]
     fn doubler() {
         let x = Thunk::new(|| dbg!(false));
-        let y = Thunk::undef();
+        let y = ThunkFn::undef();
         let w = (&x).zip(&y)
             .map(|(x, y)| *x.resolve() && *y.resolve())
             .map(|t| !t);
@@ -543,7 +430,7 @@ mod tests {
     }
     #[test]
     fn time_travel() {
-        let y = Thunk::undef();
+        let y = ThunkFn::undef();
         let m = vec![1, 2, 4, 5, 9, 7, 4, 1, 2, 329, 23, 23, 21, 123, 123, 0, 324];
         let (m, it) = m.into_iter()
             .fold((vec![], 0), |(mut vec, r), t| {
@@ -572,7 +459,7 @@ mod tests {
         println!("{}", sum.force());
 
         let z = Thunk::new(|| dbg!(true));
-        let w = Thunk::undef();
+        let w = ThunkFn::undef();
         let res = (&z).zip(&w)
             .zip(&w)
             .map(|(l, r, c)| *l.force() || *r.force() || *c.force())
