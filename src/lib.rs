@@ -346,8 +346,8 @@ impl<'a, T> Drop for ThunkBox<'a, T> {
 // FIXME: This is equivalent to Thunk<ThunkBox<'a, T>> but covariant.
 // When Thunk is patched to be covariant, this struct can be removed.
 pub struct ThunkAny<'a, T> {
-    inner: CovOnceCell<T, 32>, // this is invalid
-    init: TakeCell<ThunkBox<'a, T>, 16>
+    inner: CovOnceCell<T>,
+    init: TakeCell<ThunkBox<'a, T>>
 }
 impl<'a, T> ThunkAny<'a, T> {
     pub fn undef() -> Self {
