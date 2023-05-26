@@ -13,7 +13,7 @@ pub trait Thunkable {
     type Item;
     fn resolve(self) -> Self::Item;
 
-    fn into_thunk(self) -> Thunk<Self> 
+    fn into_thunk(self) -> Thunk<Self::Item, Self> 
         where Self: Sized
     {
         Thunk::new(self)
@@ -134,11 +134,14 @@ impl<T: std::fmt::Debug, F> std::fmt::Debug for ThunkInner<T, F> {
     }
 }
 
+fn down<'a>(t: Thunk<&'static (), fn() -> &'static ()>) -> Thunk<&'a (), fn() -> &'a ()> { t }
+fn down2<'a>(t: ThunkInner<&'static (), fn() -> &'static ()>) -> ThunkInner<&'a (), fn() -> &'a ()> { t }
+
 #[derive(Clone)]
-pub struct Thunk<F: Thunkable> {
-    inner: ThunkInner<F::Item, F>
+pub struct Thunk<T, F: Thunkable<Item=T>> {
+    inner: ThunkInner<T, F>
 }
-impl<T> Thunk<fn() -> T> {
+impl<T> Thunk<T, fn() -> T> {
     pub fn undef() -> Self {
         Thunk::new(|| panic!("undef"))
     }
@@ -146,7 +149,7 @@ impl<T> Thunk<fn() -> T> {
         Thunk::known(t)
     }
 }
-impl<F: Thunkable> Thunk<F> {
+impl<F: Thunkable> Thunk<F::Item, F> {
     pub fn new(f: F) -> Self {
         Thunk { inner: ThunkInner::uninitialized(f) }
     }
@@ -223,7 +226,7 @@ impl<F: Thunkable> Thunk<F> {
         self.inner.into_inner()
     }
 }
-impl<F: Thunkable> PartialEq for Thunk<F> 
+impl<F: Thunkable> PartialEq for Thunk<F::Item, F> 
     where F::Item: PartialEq
 {
     /// This function will resolve the thunks and checks if they are equal.
@@ -231,10 +234,10 @@ impl<F: Thunkable> PartialEq for Thunk<F>
         self.force() == other.force()
     }
 }
-impl<F: Thunkable> Eq for Thunk<F> 
+impl<F: Thunkable> Eq for Thunk<F::Item, F> 
     where F::Item: Eq
 {}
-impl<F: Thunkable> PartialOrd for Thunk<F>
+impl<F: Thunkable> PartialOrd for Thunk<F::Item, F>
     where F::Item: PartialOrd
 {
     /// This function will resolve the thunks and compare them.
@@ -242,7 +245,7 @@ impl<F: Thunkable> PartialOrd for Thunk<F>
         self.force().partial_cmp(other.force())
     }
 }
-impl<F: Thunkable> Ord for Thunk<F>
+impl<F: Thunkable> Ord for Thunk<F::Item, F>
     where F::Item: Ord
 {
     /// This function will resolve the thunks and compare them.
@@ -251,28 +254,28 @@ impl<F: Thunkable> Ord for Thunk<F>
     }
 }
 
-impl<F: Thunkable> Thunkable for Thunk<F> {
+impl<F: Thunkable> Thunkable for Thunk<F::Item, F> {
     type Item = F::Item;
 
     fn resolve(self) -> Self::Item {
         self.dethunk()
     }
 }
-impl<'a, F: Thunkable> Thunkable for &'a Thunk<F> {
+impl<'a, F: Thunkable> Thunkable for &'a Thunk<F::Item, F> {
     type Item = &'a F::Item;
 
     fn resolve(self) -> Self::Item {
         self.force()
     }
 }
-impl<'a, F: Thunkable> Thunkable for &'a mut Thunk<F> {
+impl<'a, F: Thunkable> Thunkable for &'a mut Thunk<F::Item, F> {
     type Item = &'a mut F::Item;
 
     fn resolve(self) -> Self::Item {
         self.force_mut()
     }
 }
-impl<F: Thunkable> std::fmt::Debug for Thunk<F> 
+impl<F: Thunkable> std::fmt::Debug for Thunk<F::Item, F> 
     where F::Item: std::fmt::Debug
 {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -282,7 +285,7 @@ impl<F: Thunkable> std::fmt::Debug for Thunk<F>
             .finish()
     }
 }
-impl<T: Default> Default for Thunk<fn() -> T> {
+impl<T: Default> Default for Thunk<T, fn() -> T> {
     fn default() -> Self {
         Thunk::new(Default::default)
     }
