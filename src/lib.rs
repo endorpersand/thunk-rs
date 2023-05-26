@@ -185,7 +185,7 @@ impl<F: Thunkable> Thunk<F> {
             }
         };
 
-            let init = TakeCell::new(
+            let init = TakeCell::from(
                 self.inner.init
                     .into_inner()
                     .map(Thunkable::into_box)
@@ -356,19 +356,14 @@ impl<'a, T> ThunkAny<'a, T> {
     pub fn new(f: ThunkBox<'a, T>) -> Self {
         ThunkAny { 
             inner: CovOnceCell::new(),
-            init: TakeCell::new(Some(f))
+            init: TakeCell::new(f)
         }
     }
     pub fn of(t: T) -> Self {
-        let inner = CovOnceCell::new();
-        unsafe {
-            inner.set(t) // <-- same lifetime as inner, therefore safe
-                .ok()
-                .expect("CovOnceCell should not have been initialized");
+        ThunkAny { 
+            inner: CovOnceCell::from(t),
+            init: TakeCell::empty() 
         }
-        let init = TakeCell::new(None);
-
-        ThunkAny { inner, init }
     }
     pub fn force(&self) -> &T {
         // SAFETY: cov met because T, 

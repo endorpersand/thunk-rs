@@ -60,6 +60,16 @@ impl<T> Debug for CovUnsafeCell<T> {
             .finish_non_exhaustive()
     }
 }
+impl<T: Default> Default for CovUnsafeCell<T> {
+    fn default() -> Self {
+        CovUnsafeCell::new(Default::default())
+    }
+}
+impl<T> From<T> for CovUnsafeCell<T> {
+    fn from(value: T) -> Self {
+        CovUnsafeCell::new(value)
+    }
+}
 impl<T> Drop for CovUnsafeCell<T> {
     // SAFETY: Only way to init CovUnsafeCell is a value initialization
     fn drop(&mut self) {
@@ -141,6 +151,21 @@ impl<T: Debug> Debug for CovOnceCell<T> {
         }
     }
 }
+impl<T> Default for CovOnceCell<T> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+impl<T: Clone> Clone for CovOnceCell<T> {
+    fn clone(&self) -> Self {
+        CovOnceCell { inner: CovUnsafeCell::new(self.get().cloned()) }
+    }
+}
+impl<T> From<T> for CovOnceCell<T> {
+    fn from(value: T) -> Self {
+        CovOnceCell { inner: CovUnsafeCell::new(Some(value)) }
+    }
+}
 impl<T: PartialEq> PartialEq for CovOnceCell<T> {
     fn eq(&self, other: &Self) -> bool {
         self.get() == other.get()
@@ -153,11 +178,13 @@ pub(crate) struct TakeCell<T> {
     inner: CovUnsafeCell<Option<T>>
 }
 impl<T> TakeCell<T> {
-    /// Initializes a new `TakeCell` with the provided Option.
-    pub fn new(t: Option<T>) -> Self {
-        TakeCell { inner: CovUnsafeCell::new(t) }
+    /// Initializes a new `TakeCell` with the provided value.
+    pub fn new(t: T) -> Self {
+        TakeCell::from(Some(t))
     }
-
+    pub fn empty() -> Self {
+        TakeCell::from(None)
+    }
     pub fn take(&self) -> Option<T> {
         // SAFETY: Covariance is maintained because taking can't
         // mutate a memory location with a lifetime dependent value
@@ -172,7 +199,21 @@ impl<T> TakeCell<T> {
         self.inner.into_inner()
     }
 }
-
+impl<T> From<Option<T>> for TakeCell<T> {
+    fn from(value: Option<T>) -> Self {
+        TakeCell { inner: CovUnsafeCell::new(value) }
+    }
+}
+impl<T: Default> Default for TakeCell<T> {
+    fn default() -> Self {
+        Self::new(Default::default())
+    }
+}
+impl<T: Clone> Clone for TakeCell<T> {
+    fn clone(&self) -> Self {
+        Self::from(unsafe { &*self.inner.get() }.clone())
+    }
+}
 /// Covariant version of LazyCell.
 pub(crate) struct CovLazyCell<T, F> {
     inner: CovOnceCell<T>,
@@ -184,7 +225,7 @@ impl<T, F> CovLazyCell<T, F>
 {
     /// Creates a new `CovLazyCell` with the provided initializer.
     pub fn new(f: F) -> Self {
-        CovLazyCell { inner: CovOnceCell::new(), init: TakeCell::new(Some(f)) }
+        CovLazyCell { inner: CovOnceCell::new(), init: TakeCell::new(f) }
     }
 
     pub fn force(&self) -> &T {
@@ -197,6 +238,16 @@ impl<T, F> CovLazyCell<T, F>
             })
 
         }
+    }
+}
+impl<T: Debug, F> Debug for CovLazyCell<T, F> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let mut tpl = f.debug_tuple("CovLazyCell");
+        
+        match self.inner.get() {
+            Some(t) => tpl.field(t),
+            None => tpl.field(&"?"),
+        }.finish()
     }
 }
 #[cfg(test)]
