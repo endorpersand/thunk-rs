@@ -310,7 +310,7 @@ impl<F: Thunkable> ThunkDrop for Option<F> {
 pub struct ThunkBox<'a, T>(NonNull<dyn ThunkDrop<Item=()> + 'a>, PhantomData<&'a T>);
 
 impl<'a, T> ThunkBox<'a, T> {
-    fn new<F: Thunkable<Item=T> + 'a>(f: F) -> Self {
+    pub fn new<F: Thunkable<Item=T> + 'a>(f: F) -> Self {
         let ptr = unsafe {
             let p = Box::into_raw(Box::new(Some(f)))
                 as *mut dyn ThunkDrop<Item=T>
@@ -331,7 +331,7 @@ impl<'a, T> ThunkBox<'a, T> {
         // SAFETY: ptr came from Box during initialization
         unsafe { Box::from_raw(self.0.as_ptr() as *mut dyn ThunkDrop<Item=T>) }
     }
-    fn into_thunk_any(self) -> ThunkAny<'a, T> {
+    pub fn into_thunk_any(self) -> ThunkAny<'a, T> {
         ThunkAny::new(self)
     }
 }
