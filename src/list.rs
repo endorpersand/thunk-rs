@@ -471,9 +471,8 @@ impl<'a, T, F> From<Thunk<ThunkList<'a, T>, F>> for ThunkList<'a, T>
     fn from(thunk: Thunk<ThunkList<'a, T>, F>) -> Self {
         ThunkList {
             head: NodePtr::from({
-                (|| {
-                    thunk.dethunk().head.dethunk_inner()
-                }).into_thunk_any()
+                thunk.map(|l| l.head.dethunk_inner())
+                    .into_thunk_any()
             })
         }
     }
