@@ -374,6 +374,11 @@ impl<'a, T> ThunkList<'a, T> {
     pub fn iter_strict(&self) -> IterStrict<T> {
         IterStrict(&self.head)
     }
+    pub fn contains(&self, t: &T) -> bool 
+        where T: PartialEq
+    {
+        self.iter_strict().any(|u| t == u)
+    }
     /// Gets the thunk at this index.
     pub fn get(&self, n: usize) -> Option<&ThunkAny<T>> {
         self.iter().nth(n)
