@@ -874,7 +874,10 @@ mod tests {
             ThunkAny::of(0),
         ]);
         let prod = list.foldl(|a, b| {
-            if *b.force() == 0 { 0 } else { !a * *b.force() }
+            match (a, b.force()) {
+                (_, 0) => 0,
+                (a, b) => !a * b
+            }
         }, ThunkAny::of(1));
         println!("{:?}", !prod);
     }
