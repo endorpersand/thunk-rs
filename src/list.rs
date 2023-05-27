@@ -446,35 +446,43 @@ impl<'a, T> TailPtr<'a, T> {
     }
 
     /// Appends an Rc value into the node.
-    fn raw_append(&mut self, val: Rc<ThunkAny<'a, T>>) -> bool {
+    fn raw_append(&mut self, val: Rc<ThunkAny<'a, T>>) {
+        use std::mem::replace;
+
         let tail = TailPtr::new();
         let node = Node { val, next: tail.as_node_ptr() };
 
         // SAFETY: TailPtr is invariant over Node<'a, T>, 
         // so parameters will match lifetime of initialized TailPtr.
         unsafe {
-            std::mem::replace(self, tail).ptr.set_unchecked(Some(node)).is_ok()
+            replace(self, tail).ptr.set_unchecked(Some(node))
+                .ok()
+                .expect("TailPtr should not have been set")
         }
     }
 
     /// Appends a thunk value to the current tail.
-    pub fn append(&mut self, val: ThunkAny<'a, T>) -> bool {
+    pub fn append(&mut self, val: ThunkAny<'a, T>) {
         self.raw_append(Rc::new(val))
     }
 
-    pub fn bind(self, l: &ThunkList<'a, T>) -> bool {
+    pub fn bind(self, l: &ThunkList<'a, T>) {
         let val = l.head.force().cloned();
 
         // SAFETY: TailPtr is invariant over Node<'a, T>, 
         // so parameters will match lifetime of initialized TailPtr.
         unsafe {
-            self.ptr.set_unchecked(val).is_ok()
+            self.ptr.set_unchecked(val)
+                .ok()
+                .expect("TailPtr should not have been set")
         }
     }
-    pub fn close(self) -> bool {
+    pub fn close(self) {
         // SAFETY: None is not dependent on lifetime.
         unsafe {
-            self.ptr.set_unchecked(None).is_ok()
+            self.ptr.set_unchecked(None)
+                .ok()
+                .expect("TailPtr should not have been set")
         }
     }
 }
