@@ -275,6 +275,9 @@ impl<'a, F: Thunkable> Thunkable for &'a mut Thunk<F::Item, F> {
 impl<F: Thunkable> std::ops::Not for Thunk<F::Item, F> {
     type Output = F::Item;
 
+    /// Resolves a thunk.
+    /// 
+    /// This syntax is inspired by the strict use of `!` in Haskell.
     fn not(self) -> Self::Output {
         self.dethunk()
     }
@@ -282,6 +285,9 @@ impl<F: Thunkable> std::ops::Not for Thunk<F::Item, F> {
 impl<'a, F: Thunkable> std::ops::Not for &'a Thunk<F::Item, F> {
     type Output = &'a F::Item;
 
+    /// Resolves a thunk.
+    /// 
+    /// This syntax is inspired by the strict use of `!` in Haskell.
     fn not(self) -> Self::Output {
         self.force()
     }
@@ -289,6 +295,9 @@ impl<'a, F: Thunkable> std::ops::Not for &'a Thunk<F::Item, F> {
 impl<'a, F: Thunkable> std::ops::Not for &'a mut Thunk<F::Item, F> {
     type Output = &'a mut F::Item;
 
+    /// Resolves a thunk.
+    /// 
+    /// This syntax is inspired by the strict use of `!` in Haskell.
     fn not(self) -> Self::Output {
         self.force_mut()
     }
@@ -435,22 +444,22 @@ mod tests {
             3u32
         });
         let y = vec![
-            (&x).map(|t| t + 14).into_box(),
-            (&x).cloned().into_box(),
-            (&y).cloned().into_box(),
-            (&x).cloned().into_box(),
+            (&x).map(|t| t + 14).into_thunk_any(),
+            (&x).cloned().into_thunk_any(),
+            (&y).cloned().into_thunk_any(),
+            (&x).cloned().into_thunk_any(),
         ];
         let z = Thunk::new(|| {
                 y.into_iter()
-                    .map(|b| b.resolve())
+                    .resolved()
                     .collect::<Vec<_>>()
             })
             .into_thunk();
 
         let xy = (&x).map(|t| t + 1).into_thunk();
         let _ = x.set(13);
-        println!("{:?}", xy.force());
-        println!("{:?}", z.force());
+        println!("{:?}", !xy);
+        println!("{:?}", !z);
     }
 
     #[test]
@@ -458,9 +467,9 @@ mod tests {
         let x = Thunk::new(|| dbg!(false));
         let y = ThunkFn::undef();
         let w = (&x).zip(&y)
-            .map(|(x, y)| *x.resolve() && *y.resolve())
+            .map(|(x, y)| *!x && *!y)
             .map(|t| !t);
-        println!("{}", w.into_thunk().force());
+        println!("{}", !w.into_thunk());
     }
     #[test]
     fn time_travel() {
@@ -490,15 +499,15 @@ mod tests {
             .inspect(|_| println!("loaded thunk sum"))
             .into_thunk();
         println!("created thunk sum");
-        println!("{}", sum.force());
+        println!("{}", !sum);
 
         let z = Thunk::new(|| dbg!(true));
         let w = ThunkFn::undef();
         let res = (&z).zip(&w)
             .zip(&w)
-            .map(|(l, r, c)| *l.force() || *r.force() || *c.force())
+            .map(|(l, r, c)| *!l || *!r || *!c)
             .inspect(|_| println!("loaded result"))
             .into_thunk();
-        println!("{}", res.force());
+        println!("{}", !res);
     }
 }

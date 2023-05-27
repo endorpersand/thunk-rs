@@ -813,10 +813,10 @@ mod tests {
             .collect();
 
         let foldy = superand.foldr(
-            |t, u| *t.force() && u.dethunk(), 
+            |t, u| *!t.as_ref() && !u,
             ThunkAny::of(true)
         );
-        assert!(!*foldy.force());
+        assert!(!foldy.dethunk());
 
         let list: ThunkList<usize> = (1..=100).collect();
 
@@ -832,10 +832,10 @@ mod tests {
         }, "{list2:?} != {:?}", 1..=100);
 
         let list3: ThunkList<usize> = ThunkList::repeat(ThunkAny::of(0));
-        let list4 = list3.foldr(
+        let list4: ThunkList<_> = list3.foldr(
             |acc, cv| ThunkList::cons(acc.unwrap_or_clone(), cv), 
             ThunkAny::of(ThunkList::new())
-        ).dethunk();
+        ).into();
 
         let vec4 = take_nc(&list4, 25);
         assert_eq!(vec4, [0; 25]);
