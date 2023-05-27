@@ -2,7 +2,7 @@ use std::marker::PhantomData;
 use std::mem::ManuallyDrop;
 use std::rc::Rc;
 
-use crate::{ThunkAny, Thunkable};
+use crate::{ThunkAny, Thunkable, Thunk};
 
 /// Checks if the given `Rc<T>` points to a reference cycle of `Rc<T>`s.
 /// The `f` callback indicates how to access the next `Rc<T>` in the sequence.
@@ -216,16 +216,16 @@ impl<'a, T> ThunkList<'a, T> {
         ThunkList { head: NodePtr::new(ThunkAny::of(None)) }
     }
 
-    /// Concats a thunk to the end of this list.
-    pub fn cons(f: ThunkAny<'a, T>, this: impl Into<Self>) -> ThunkList<'a, T> {
+    /// Concats a thunk to the front of this list.
+    pub fn cons(f: Thunk<T, impl Thunkable<Item = T> + 'a>, this: impl Into<Self>) -> ThunkList<'a, T> {
         let node = Node {
-            val: Rc::new(f),
+            val: Rc::new(f.boxed()),
             next: this.into().head,
         };
 
         ThunkList { head: NodePtr::from(node) }
     }
-    /// Concats a value to the end of this list.
+    /// Concats a value to the front of this list.
     pub fn cons_known(t: T, this: impl Into<Self>) -> ThunkList<'a, T> {
         ThunkList::cons(ThunkAny::of(t), this.into())
     }
@@ -291,7 +291,7 @@ impl<'a, T> ThunkList<'a, T> {
     /// Creates a list where the provided thunk element is repeated infinitely.
     /// 
     /// This is a lazy operation.
-    pub fn repeat(f: ThunkAny<'a, T>) -> ThunkList<'a, T> {
+    pub fn repeat(f: Thunk<T, impl Thunkable<Item=T> + 'a>) -> ThunkList<'a, T> {
         let (mut tail, lst) = ThunkList::tailed();
         tail.append(f);
         tail.bind(&lst);
@@ -326,13 +326,13 @@ impl<'a, T> ThunkList<'a, T> {
         ltail.close();
         (left, right)
     }
-    pub fn insert(self, n: usize, t: ThunkAny<'a, T>) -> ThunkList<'a, T> {
+    pub fn insert(self, n: usize, t: Thunk<T, impl Thunkable<Item=T> + 'a>) -> ThunkList<'a, T> {
         let (left, mut ltail, right) = self.cursor(n);
         ltail.append(t);
         ltail.bind(&right);
         left
     }
-    pub fn foldr<U, F>(self, f: F, base: ThunkAny<'a, U>) -> ThunkAny<'a, U> 
+    pub fn foldr<U, F>(self, f: F, base: Thunk<U, impl Thunkable<Item=U> + 'a>) -> ThunkAny<'a, U> 
         where F: FnMut(Rc<ThunkAny<'a, T>>, ThunkAny<'a, U>) -> U + Copy + 'a
     {
         fn foldr_node<'a, T, U, F>(nptr: NodePtr<'a, T>, mut f: F, base: ThunkAny<'a, U>) -> ThunkAny<'a, U>
@@ -347,7 +347,7 @@ impl<'a, T> ThunkList<'a, T> {
             }).into_thunk_any()
         }
 
-        foldr_node(self.head, f, base)
+        foldr_node(self.head, f, base.boxed())
     }
     pub fn iter(&self) -> Iter<T> {
         Iter(&self.head)
@@ -394,12 +394,16 @@ impl<'a, T> ThunkList<'a, T> {
     pub fn iterate_known(mut f: impl FnMut() -> Option<T> + 'a) -> ThunkList<'a, T> {
         ThunkList::iterate(move || f().map(ThunkAny::of))
     }
-    pub fn iterate(f: impl FnMut() -> Option<ThunkAny<'a, T>> + 'a) -> ThunkList<'a, T> {
-        fn iterate_node<'a, T>(mut f: impl FnMut() -> Option<ThunkAny<'a, T>> + 'a) -> NodePtr<'a, T> {
+    pub fn iterate<F>(f: impl FnMut() -> Option<Thunk<T, F>> + 'a) -> ThunkList<'a, T> 
+        where F: Thunkable<Item=T> + 'a
+    {
+        fn iterate_node<'a, T, F>(mut f: impl FnMut() -> Option<Thunk<T, F>> + 'a) -> NodePtr<'a, T> 
+            where F: Thunkable<Item = T> + 'a
+        {
             NodePtr::from({
                 crate::ThunkBox::new(|| {
                     Some(Node {
-                        val: Rc::new(f()?),
+                        val: Rc::new(f()?.boxed()),
                         next: iterate_node(f)
                     })
                 }).into_thunk_any()
@@ -408,14 +412,19 @@ impl<'a, T> ThunkList<'a, T> {
 
         ThunkList { head: iterate_node(f) }
     }
-    pub fn iterate_strict(f: impl FnMut() -> Option<ThunkAny<'a, T>>) -> ThunkList<'a, T> {
+    pub fn iterate_strict<F>(f: impl FnMut() -> Option<Thunk<T, F>>) -> ThunkList<'a, T> 
+        where F: Thunkable<Item=T> + 'a
+    {
         let (mut tail, lst) = ThunkList::tailed();
 
         tail.extend(std::iter::from_fn(f));
         tail.close();
         lst
     }
-    pub fn from_iter_lazy<I: IntoIterator<Item=ThunkAny<'a, T>> + 'a>(iter: I) -> ThunkList<'a, T> {
+    pub fn from_iter_lazy<F, I>(iter: I) -> ThunkList<'a, T> 
+        where F: Thunkable<Item=T> + 'a,
+            I: IntoIterator<Item=Thunk<T, F>> + 'a
+    {
         let mut it = iter.into_iter();
         ThunkList::iterate(move || it.next())
     }
@@ -427,16 +436,18 @@ impl<'a, T: std::fmt::Debug> std::fmt::Debug for ThunkList<'a, T> {
             .finish()
     }
 }
-impl<'a, T> From<ThunkAny<'a, ThunkList<'a, T>>> for ThunkList<'a, T> {
+impl<'a, T, F> From<Thunk<ThunkList<'a, T>, F>> for ThunkList<'a, T> 
+    where F: Thunkable<Item = ThunkList<'a, T>> + 'a
+{
     /// Creates a new ThunkList from a lazily evaluated ThunkList.
     ///
     /// This does not evaluate the list.
-    /// This should be used instead of [`ThunkAny::dethunk`] in situations
+    /// This should be used instead of [`Thunk::dethunk`] in situations
     /// where the list does not need to be resolved.
-    fn from(thunk: ThunkAny<'a, ThunkList<'a, T>>) -> Self {
+    fn from(thunk: Thunk<ThunkList<'a, T>, F>) -> Self {
         ThunkList {
             head: NodePtr::from({
-                crate::ThunkBox::new(|| {
+                (|| {
                     thunk.dethunk().head.dethunk_inner()
                 }).into_thunk_any()
             })
@@ -478,8 +489,8 @@ impl<'a, T> TailPtr<'a, T> {
     }
 
     /// Appends a thunk value to the current tail.
-    pub fn append(&mut self, val: ThunkAny<'a, T>) {
-        self.raw_append(Rc::new(val))
+    pub fn append(&mut self, val: Thunk<T, impl Thunkable<Item=T> + 'a>) {
+        self.raw_append(Rc::new(val.boxed()))
     }
 
     pub fn bind(self, l: &ThunkList<'a, T>) {
@@ -509,8 +520,10 @@ impl<A> Extend<A> for TailPtr<'_, A> {
         }
     }
 }
-impl<'a, A> Extend<ThunkAny<'a, A>> for TailPtr<'a, A> {
-    fn extend<T: IntoIterator<Item = ThunkAny<'a, A>>>(&mut self, iter: T) {
+impl<'a, A, F> Extend<Thunk<A, F>> for TailPtr<'a, A> 
+    where F: Thunkable<Item=A> + 'a
+{
+    fn extend<T: IntoIterator<Item = Thunk<A, F>>>(&mut self, iter: T) {
         for el in iter {
             self.append(el);
         }
@@ -597,8 +610,8 @@ impl<A> FromIterator<A> for ThunkList<'_, A> {
         ThunkList::iterate_strict(move || it.next().map(ThunkAny::of))
     }
 }
-impl<'a, A> FromIterator<ThunkAny<'a, A>> for ThunkList<'a, A> {
-    fn from_iter<T: IntoIterator<Item = ThunkAny<'a, A>>>(iter: T) -> Self {
+impl<'a, A, F: Thunkable<Item=A> + 'a> FromIterator<Thunk<A, F>> for ThunkList<'a, A> {
+    fn from_iter<T: IntoIterator<Item = Thunk<A, F>>>(iter: T) -> Self {
         let mut it = iter.into_iter();
         ThunkList::iterate_strict(move || it.next())
     }
