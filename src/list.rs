@@ -2,7 +2,7 @@ use std::marker::PhantomData;
 use std::mem::ManuallyDrop;
 use std::rc::Rc;
 
-use crate::ThunkAny;
+use crate::{ThunkAny, Thunkable};
 
 /// Checks if the given `Rc<T>` points to a reference cycle of `Rc<T>`s.
 /// The `f` callback indicates how to access the next `Rc<T>` in the sequence.
@@ -232,7 +232,7 @@ impl<'a, T> ThunkList<'a, T> {
     pub fn raw_append(self) -> (TailPtr<'a, T>, ThunkList<'a, T>) {
         fn insert_end<'a, T>(ptr: NodePtr<'a, T>, end: NodePtr<'a, T>) -> NodePtr<'a, T> {
             NodePtr::from({
-                crate::ThunkBox::new(|| match ptr.dethunk_inner() {
+                (|| match ptr.dethunk_inner() {
                     Some(Node { val, next }) => Some(Node { val, next: insert_end(next, end) }),
                     None => end.dethunk_inner()
                 }).into_thunk_any()
@@ -598,7 +598,7 @@ impl<'a, T, const N: usize> From<([T; N], ThunkList<'a, T>)> for ThunkList<'a, T
 mod tests {
     use std::rc::{Rc, Weak};
 
-    use crate::ThunkAny;
+    use crate::{ThunkAny, Thunkable};
 
     use super::ThunkList;
 
@@ -751,7 +751,7 @@ mod tests {
     fn strict_collect() {
         let list: ThunkList<usize> = (0..=15)
             .map(|i| {
-                crate::ThunkBox::new(move || {
+                (move || {
                     println!("initialized {i}");
                     i * 2
                 }).into_thunk_any()
@@ -771,7 +771,7 @@ mod tests {
     fn foldr_test() {
         let superand: ThunkList<bool> = (1..=100)
             .map(|i| {
-                crate::ThunkBox::new(move || {
+                (move || {
                     println!("initialized {i}");
                     i % 29 != 0
                 }).into_thunk_any()

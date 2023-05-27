@@ -19,6 +19,17 @@ pub trait Thunkable {
     {
         Thunk::new(self)
     }
+    fn into_box<'a>(self) -> ThunkBox<'a, Self::Item> 
+        where Self: Sized + 'a
+    {
+        ThunkBox::new(self)
+    }
+    fn into_thunk_any<'a>(self) -> ThunkAny<'a, Self::Item> 
+        where Self: Sized + 'a
+    {
+        self.into_thunk().boxed()
+    }
+
     fn map<U, F: FnOnce(Self::Item) -> U>(self, f: F) -> transform::Map<Self, F> 
         where Self: Sized
     {
@@ -59,11 +70,6 @@ pub trait Thunkable {
         where Self: Sized
     {
         transform::ZipMap((self, b), f)
-    }
-    fn into_box<'a>(self) -> ThunkBox<'a, Self::Item> 
-        where Self: Sized + 'a
-    {
-        ThunkBox::new(self)
     }
 }
 impl<T, F: FnOnce() -> T> Thunkable for F {
@@ -168,9 +174,6 @@ impl<F: Thunkable> Thunk<F::Item, F> {
     pub unsafe fn set_unchecked(&self, val: F::Item) -> Result<(), F::Item> {
         self.inner.set(val)
     }
-    /// # Safety
-    /// 
-    /// Set value must match the lifetime this struct had when it was initialized.
     pub fn set(&self, val: F::Item) -> Result<(), F::Item> 
         where F::Item: 'static 
     {
@@ -303,7 +306,8 @@ impl<F: Thunkable> ThunkDrop for Option<F> {
 }
 
 /// This struct should be used in situations where a `Box<dyn Thunkable>` is needed.
-/// Unlike `Box<dyn Thunkable>`, this struct allows [`Thunkable::resolve`] to be called.
+/// Unlike `Box<dyn Thunkable>`, this struct allows [`Thunkable::resolve`] to be called,
+/// and is covariant over 'a and T.
 /// 
 /// This type still internally uses a `dyn Trait`, so the same warnings about `dyn Trait`
 /// apply when considering using this type.
@@ -331,9 +335,6 @@ impl<'a, T> ThunkBox<'a, T> {
         // SAFETY: ptr came from Box during initialization
         unsafe { Box::from_raw(self.0.as_ptr() as *mut dyn ThunkDrop<Item=T>) }
     }
-    pub fn into_thunk_any(self) -> ThunkAny<'a, T> {
-        ThunkAny::new(self)
-    }
 }
 impl<'a, T> Thunkable for ThunkBox<'a, T> {
     type Item = T;
@@ -355,7 +356,7 @@ impl<'a, T> Drop for ThunkBox<'a, T> {
     fn drop(&mut self) {
         // SAFETY: Nothing happens after drop.
         unsafe {
-            let _ = self.to_tdbox();
+            std::mem::drop(self.to_tdbox());
         }
     }
 }
@@ -365,23 +366,23 @@ pub type ThunkAny<'a, T> = Thunk<T, ThunkBox<'a, T>>;
 
 impl<'a, T> ThunkAny<'a, T> {
     pub fn undef() -> Self {
-        ThunkAny::new((|| panic!("undef")).into_box())
+        (|| panic!("undef")).into_thunk_any()
     }
     pub fn fix(f: fn(ThunkAny<'a, T>) -> T) -> ThunkAny<'a, T> {
-        ThunkBox::new(move || f(Self::fix(f))).into_thunk_any()
+        (move || f(Self::fix(f))).into_thunk_any()
     }
 }
 impl<'a, T: Clone> ThunkAny<'a, T> {
     pub fn unwrap_or_clone(self: Rc<Self>) -> Self {
         match Rc::try_unwrap(self) {
             Ok(t) => t,
-            Err(e) => ThunkBox::new(move || e.force().clone()).into_thunk_any(),
+            Err(e) => (move || e.force().clone()).into_thunk_any(),
         }
     }
 }
 impl<'a, T: Default + 'a> Default for ThunkAny<'a, T> {
     fn default() -> Self {
-        ThunkBox::new(Default::default).into_thunk_any()
+        (Default::default).into_thunk_any()
     }
 }
 
