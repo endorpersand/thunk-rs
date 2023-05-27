@@ -2,6 +2,7 @@ pub mod tuple;
 pub mod transform;
 pub mod list;
 mod cell;
+pub mod iter;
 use cell::{TakeCell, CovOnceCell};
 pub use transform::zip;
 
@@ -291,6 +292,11 @@ impl<T> ThunkFn<T> {
 impl<T: Default> Default for ThunkFn<T> {
     fn default() -> Self {
         Thunk::new(Default::default)
+    }
+}
+impl<T> From<T> for Thunk<T, transform::Known<T>> {
+    fn from(value: T) -> Self {
+        Thunk::of(value)
     }
 }
 

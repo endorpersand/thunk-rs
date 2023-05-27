@@ -1,3 +1,5 @@
+use std::marker::PhantomData;
+
 use crate::tuple::TupleConcat;
 use crate::Thunkable;
 
@@ -82,5 +84,14 @@ impl<A: Thunkable, B: Thunkable> Thunkable for Seq<A, B> {
 
     fn resolve(self) -> Self::Item {
         (self.0.resolve(), self.1.resolve())
+    }
+}
+
+pub struct Known<T>(PhantomData<T>);
+impl<T> Thunkable for Known<T> {
+    type Item = T;
+
+    fn resolve(self) -> Self::Item {
+        unreachable!("Known structs should never be initialized")
     }
 }

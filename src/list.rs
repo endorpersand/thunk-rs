@@ -635,7 +635,8 @@ impl<'a, T, const N: usize> From<([T; N], ThunkList<'a, T>)> for ThunkList<'a, T
 mod tests {
     use std::rc::{Rc, Weak};
 
-    use crate::{ThunkAny, Thunkable};
+    use crate::iter::ThunkItertools;
+    use crate::ThunkAny;
 
     use super::ThunkList;
 
@@ -787,11 +788,9 @@ mod tests {
     #[test]
     fn strict_collect() {
         let list: ThunkList<usize> = (0..=15)
-            .map(|i| {
-                (move || {
-                    println!("initialized {i}");
-                    i * 2
-                }).into_thunk_any()
+            .map_delayed(|i| {
+                println!("initialized {i}");
+                i * 2
             })
             .collect();
 
@@ -807,11 +806,9 @@ mod tests {
     #[test]
     fn foldr_test() {
         let superand: ThunkList<bool> = (1..=100)
-            .map(|i| {
-                (move || {
-                    println!("initialized {i}");
-                    i % 29 != 0
-                }).into_thunk_any()
+            .map_delayed(|i| {
+                println!("initialized {i}");
+                i % 29 != 0
             })
             .collect();
 
@@ -823,13 +820,13 @@ mod tests {
 
         let list: ThunkList<usize> = (1..=100).collect();
 
-        let list2 = list.foldr(
+        let list2: ThunkList<_> = list.foldr(
             |acc, cv| ThunkList::cons(acc.unwrap_or_clone(), cv), 
             ThunkAny::of(ThunkList::new())
-        );
+        ).into();
+
         assert!({
-            list2.force()
-                .iter_strict()
+            list2.iter_strict()
                 .copied()
                 .eq(1..=100)
         }, "{list2:?} != {:?}", 1..=100);
