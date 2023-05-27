@@ -429,20 +429,37 @@ impl<'a, T: Default + 'a> Default for ThunkAny<'a, T> {
 
 #[cfg(test)]
 mod tests {
+    use std::cell::Cell;
+    use std::rc::Rc;
+
     use crate::iter::ThunkItertools;
     use crate::transform::Seq;
     use crate::{Thunk, Thunkable, ThunkFn};
 
+    /// Creates a Thunk with a const value and a cell that indicates how many times that
+    /// the initializer function has been initialized.
+    /// 
+    /// If things go right, the Cell should only ever hold a 0 or a 1.
+    fn init_thunk<T>(t: T) -> (Rc<Cell<usize>>, Thunk<T, impl Thunkable<Item=T>>) {
+        init_inspect(Thunk::from(t))
+    }
+    fn init_inspect<F: Thunkable>(t: Thunk<F::Item, F>) -> (Rc<Cell<usize>>, Thunk<F::Item, impl Thunkable<Item=F::Item>>) {
+        let cell = Rc::new(Cell::new(0));
+        let cell2 = Rc::clone(&cell);
+
+        let thunk = t.inspect(move |_| cell.set(cell.get() + 1))
+            .into_thunk();
+
+        (cell2, thunk)
+    }
     #[test]
     fn thunky() {
-        let x = Thunk::new(|| {
-            println!("initialized x");
-            2u32
-        });
-        let y = Thunk::new(|| {
-            println!("initialized y");
-            3u32
-        });
+        let (x_init, x) = init_thunk(2);
+        let (y_init, y) = init_thunk(3);
+        
+        assert_eq!(x_init.get(), 0);
+        assert_eq!(y_init.get(), 0);
+
         let y = vec![
             (&x).map(|t| t + 14).into_thunk_any(),
             (&x).cloned().into_thunk_any(),
@@ -450,64 +467,73 @@ mod tests {
             (&x).cloned().into_thunk_any(),
         ];
         let z = Thunk::new(|| {
-                y.into_iter()
-                    .resolved()
-                    .collect::<Vec<_>>()
-            })
-            .into_thunk();
+            y.into_iter()
+                .resolved()
+                .collect::<Vec<_>>()
+        });
+
+        assert_eq!(x_init.get(), 0);
+        assert_eq!(y_init.get(), 0);
 
         let xy = (&x).map(|t| t + 1).into_thunk();
         let _ = x.set(13);
-        println!("{:?}", !xy);
-        println!("{:?}", !z);
+
+        assert_eq!(!xy, 14);
+        assert_eq!(!z, [27, 13, 3, 13]);
+
+        assert_eq!(x_init.get(), 0);
+        assert_eq!(y_init.get(), 1);
     }
 
     #[test]
-    fn doubler() {
-        let x = Thunk::new(|| dbg!(false));
-        let y = ThunkFn::undef();
-        let w = (&x).zip(&y)
-            .map(|(x, y)| *!x && *!y)
-            .map(|t| !t);
-        println!("{}", !w.into_thunk());
+    fn sequer_zipper() {
+        // seq
+        let (x_init, x) = init_thunk(14);
+        let (y_init, y) = init_thunk(25);
+        
+        let seq = Seq(&x, &y)
+            .map(|(x, y)| x + y)
+            .into_thunk();
+
+        assert_eq!(!seq, 39);
+        assert_eq!(x_init.get(), 1);
+        assert_eq!(y_init.get(), 1);
+
+        let (x_init, x) = init_thunk(false);
+        let (y_init, y) = init_inspect(ThunkFn::undef());
+
+        // zip2
+        let zip = (&x).zip(&y)
+            .map(|(x, y)| *!x && *!y);
+        
+        assert!(!zip.resolve());
+        assert_eq!(x_init.get(), 1);
+        assert_eq!(y_init.get(), 0);
+        
+        // zip4
+        let zip = (&x).zip(&y).zip(&y).zip(&y)
+            .map(|(a, b, c, d)| *!a && *!b && *!c && *!d);
+        assert!(!zip.resolve());
+        assert_eq!(x_init.get(), 1);
+        assert_eq!(y_init.get(), 0);
     }
     #[test]
     fn time_travel() {
         let y = ThunkFn::undef();
         let m = vec![1, 2, 4, 5, 9, 7, 4, 1, 2, 329, 23, 23, 21, 123, 123, 0, 324];
+        
         let (m, it) = m.into_iter()
             .fold((vec![], 0), |(mut vec, r), t| {
                 vec.push(&y);
                 (vec, r.max(t))
             });
         y.set(it).ok().unwrap();
+
         let m: Vec<_> = m.into_iter()
             .forced()
             .copied()
             .collect();
-        println!("{m:?}");
-    }
-
-    #[test]
-    fn newthunk() {
-        let x = Thunk::new(|| dbg!(2));
-        let y = Thunk::new(|| dbg!(3));
-
-        println!("creating thunk sum");
-        let sum = Seq(&x, &y)
-            .map(|(x, y)| x + y)
-            .inspect(|_| println!("loaded thunk sum"))
-            .into_thunk();
-        println!("created thunk sum");
-        println!("{}", !sum);
-
-        let z = Thunk::new(|| dbg!(true));
-        let w = ThunkFn::undef();
-        let res = (&z).zip(&w)
-            .zip(&w)
-            .map(|(l, r, c)| *!l || *!r || *!c)
-            .inspect(|_| println!("loaded result"))
-            .into_thunk();
-        println!("{}", !res);
+        
+        assert_eq!(m, [329; 17]);
     }
 }
