@@ -191,12 +191,7 @@ impl<'a, T> From<Node<'a, T>> for NodePtr<'a, T> {
 }
 impl<T> PartialEq for NodePtr<'_, T> {
     fn eq(&self, other: &Self) -> bool {
-        match (&self.0, &other.0) {
-            (None, None) => true,
-            (None, Some(_)) => false,
-            (Some(_), None) => false,
-            (Some(t), Some(u)) => Rc::ptr_eq(t, u),
-        }
+        self.as_ptr() == other.as_ptr()
     }
 }
 impl<T> Eq for NodePtr<'_, T> {}
