@@ -332,6 +332,25 @@ impl<'a, T> ThunkList<'a, T> {
         ltail.bind(&right);
         left
     }
+    pub fn foldl<U, F>(self, f: F, base: Thunk<U, impl Thunkable<Item=U> + 'a>) -> ThunkAny<'a, U> 
+        where F: FnMut(ThunkAny<'a, U>, Rc<ThunkAny<'a, T>>) -> U + Copy + 'a
+    {
+        fn foldl_node<'a, T, U, F>(nptr: NodePtr<'a, T>, mut f: F, base: ThunkAny<'a, U>) -> ThunkAny<'a, U>
+            where F: FnMut(ThunkAny<'a, U>, Rc<ThunkAny<'a, T>>) -> U + Copy + 'a
+        {
+            (move || {
+                let Some(node) = nptr.dethunk_inner() else { return base };
+                let Node { val, next } = node;
+    
+                let base = (move || f(base, val)).into_thunk_any();
+                foldl_node(next, f, base)
+            })
+                .flatten()
+                .into_thunk_any()
+        }
+
+        foldl_node(self.head, f, base.boxed())
+    }
     pub fn foldr<U, F>(self, f: F, base: Thunk<U, impl Thunkable<Item=U> + 'a>) -> ThunkAny<'a, U> 
         where F: FnMut(Rc<ThunkAny<'a, T>>, ThunkAny<'a, U>) -> U + Copy + 'a
     {
@@ -840,7 +859,20 @@ mod tests {
         let vec4 = take_nc(&list4, 25);
         assert_eq!(vec4, [0; 25]);
     }
-
+    #[test]
+    fn foldl_test() {
+        let list: ThunkList<i32> = ThunkList::from_iter([
+            ThunkAny::of(2),
+            ThunkAny::of(3),
+            ThunkAny::undef(),
+            ThunkAny::of(5),
+            ThunkAny::of(0),
+        ]);
+        let prod = list.foldl(|a, b| {
+            if *b.force() == 0 { 0 } else { !a * *b.force() }
+        }, ThunkAny::of(1));
+        println!("{:?}", !prod);
+    }
     #[test]
     fn raw_append_test() {
         let mut list: ThunkList<usize> = (1..=15).collect();
