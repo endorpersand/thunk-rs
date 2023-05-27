@@ -251,6 +251,11 @@ impl<F: Thunkable> Thunkable for Thunk<F::Item, F> {
     fn resolve(self) -> Self::Item {
         self.dethunk()
     }
+    fn into_thunk_any<'a>(self) -> ThunkAny<'a, Self::Item> 
+            where Self: 'a 
+    {
+        self.boxed()
+    }
 }
 impl<'a, F: Thunkable> Thunkable for &'a Thunk<F::Item, F> {
     type Item = &'a F::Item;
