@@ -199,6 +199,14 @@ impl<F: Thunkable> Thunk<F::Item, F> {
             }
         }
     }
+    /// If the Rc is known to only be referenced once, this can be used
+    /// to unwrap and dethunk the Rc.
+    pub fn unwrap_dethunk(self: Rc<Self>) -> F::Item {
+        match Rc::try_unwrap(self) {
+            Ok(thunk) => !thunk,
+            Err(e) => panic!("couldn't unwrap Rc, has {} references", Rc::strong_count(&e)),
+        }
+    }
     pub fn dethunk_or_clone(self: Rc<Self>) -> F::Item 
         where F::Item: Clone
     {
@@ -460,14 +468,14 @@ mod tests {
         assert_eq!(x_init.get(), 0);
         assert_eq!(y_init.get(), 0);
 
-        let y = vec![
+        let list = vec![
             (&x).map(|t| t + 14).into_thunk_any(),
             (&x).cloned().into_thunk_any(),
             (&y).cloned().into_thunk_any(),
             (&x).cloned().into_thunk_any(),
         ];
-        let z = Thunk::new(|| {
-            y.into_iter()
+        let list2 = Thunk::new(|| {
+            list.into_iter()
                 .resolved()
                 .collect::<Vec<_>>()
         });
@@ -479,7 +487,7 @@ mod tests {
         let _ = x.set(13);
 
         assert_eq!(!xy, 14);
-        assert_eq!(!z, [27, 13, 3, 13]);
+        assert_eq!(!list2, [27, 13, 3, 13]);
 
         assert_eq!(x_init.get(), 0);
         assert_eq!(y_init.get(), 1);

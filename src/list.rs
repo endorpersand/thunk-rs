@@ -654,7 +654,7 @@ mod tests {
     use std::rc::{Rc, Weak};
 
     use crate::iter::ThunkItertools;
-    use crate::ThunkAny;
+    use crate::{ThunkAny, Thunkable};
 
     use super::ThunkList;
 
@@ -776,6 +776,36 @@ mod tests {
         assert_eq!(ctr, 11);
     }
 
+    #[test]
+    fn thunky2() {
+        let x = crate::Thunk::new(|| 2);
+        let y = crate::Thunk::new(|| 3);
+        
+        let list = ThunkList::from_iter([
+            (&x).map(|t| t + 14).into_thunk_any(),
+            (&x).cloned().into_thunk_any(),
+            (&y).cloned().into_thunk_any(),
+            (&x).cloned().into_thunk_any(),
+        ]);
+
+        let _ = x.set(13);
+        assert_eq!(list, ThunkList::from([27, 13, 3, 13]));
+    }
+    #[test]
+    fn time_travel2() {
+        let y = ThunkAny::undef();
+        let l = ThunkList::from([1, 2, 4, 5, 9, 7, 4, 1, 2, 329, 23, 23, 21, 123, 123, 0, 324]);
+        
+        let thunk = l.foldr(|el, thunk| {
+            let (list, m) = !thunk;
+            (ThunkList::cons((&y).copied().into_thunk(), list), m.max(el.dethunk_or_clone()))
+        }, ThunkAny::of((ThunkList::new(), 0)));
+        
+        let (list, max) = !thunk;
+        y.set(max).ok().unwrap();
+
+        assert_eq!(list, ThunkList::from([329; 17]));
+    }
     #[test]
     fn lifetimes() {
         let s = "str";
