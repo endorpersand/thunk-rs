@@ -189,7 +189,17 @@ impl<'a, T> From<Node<'a, T>> for NodePtr<'a, T> {
         NodePtr::from(ThunkAny::of(Some(value)))
     }
 }
-
+impl<T> PartialEq for NodePtr<'_, T> {
+    fn eq(&self, other: &Self) -> bool {
+        match (&self.0, &other.0) {
+            (None, None) => true,
+            (None, Some(_)) => false,
+            (Some(_), None) => false,
+            (Some(t), Some(u)) => Rc::ptr_eq(t, u),
+        }
+    }
+}
+impl<T> Eq for NodePtr<'_, T> {}
 impl<T> Clone for Node<'_, T> {
     fn clone(&self) -> Self {
         Self { val: Rc::clone(&self.val), next: self.next.clone() }
@@ -207,17 +217,17 @@ impl<'a, T> ThunkList<'a, T> {
     }
 
     /// Concats a thunk to the end of this list.
-    pub fn cons(f: ThunkAny<'a, T>, this: Self) -> ThunkList<'a, T> {
+    pub fn cons(f: ThunkAny<'a, T>, this: impl Into<Self>) -> ThunkList<'a, T> {
         let node = Node {
             val: Rc::new(f),
-            next: this.head,
+            next: this.into().head,
         };
 
         ThunkList { head: NodePtr::from(node) }
     }
     /// Concats a value to the end of this list.
-    pub fn cons_known(t: T, this: Self) -> ThunkList<'a, T> {
-        ThunkList::cons(ThunkAny::of(t), this)
+    pub fn cons_known(t: T, this: impl Into<Self>) -> ThunkList<'a, T> {
+        ThunkList::cons(ThunkAny::of(t), this.into())
     }
 
     /// Creates a list whose tail can be edited.
@@ -366,8 +376,14 @@ impl<'a, T> ThunkList<'a, T> {
     /// This returns the length of the list prior to any cycle, and then the length of the cycle.
     /// This will hang if the list is infinite but does not have a cycle.
     pub fn list_len(&self) -> (usize, usize) {
+        fn eq<T>(a: &Node<T>, b: &Node<T>) -> bool {
+            // Two nodes are list_len equal if they have the same value ptr
+            // and same next ptr
+            Rc::ptr_eq(&a.val, &b.val) && a.next == b.next
+        }
+
         match self.head.force() {
-            Some(node) => find_cycle_len(node, |t| t.next.force(), |a, b| Rc::ptr_eq(&a.val, &b.val)),
+            Some(node) => find_cycle_len(node, |t| t.next.force(), eq),
             None => (0, 0),
         }
     }
@@ -795,7 +811,7 @@ mod tests {
         let list: ThunkList<usize> = (1..=100).collect();
 
         let list2 = list.foldr(
-            |acc, cv| ThunkList::cons(acc.unwrap_or_clone(), cv.into()), 
+            |acc, cv| ThunkList::cons(acc.unwrap_or_clone(), cv), 
             ThunkAny::of(ThunkList::new())
         );
         assert!({
@@ -807,7 +823,7 @@ mod tests {
 
         let list3: ThunkList<usize> = ThunkList::repeat(ThunkAny::of(0));
         let list4 = list3.foldr(
-            |acc, cv| ThunkList::cons(acc.unwrap_or_clone(), cv.into()), 
+            |acc, cv| ThunkList::cons(acc.unwrap_or_clone(), cv), 
             ThunkAny::of(ThunkList::new())
         ).dethunk();
 
@@ -864,7 +880,10 @@ mod tests {
         // let e = [];
         let list00 = ThunkList::from_iter(0..0);
         assert_eq!(list00.list_len(), (0, 0));
-
+        
+        let list50 = list01.split_at(4).0.append([1].into());
+        assert_eq!(list50.list_len(), (5, 0));
+        
         // this tests adding extra els, which aren't the same ref 
         // and can't be considered the same.
         let (ptr, list) = ThunkList::tailed();
