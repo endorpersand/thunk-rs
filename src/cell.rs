@@ -3,27 +3,18 @@
 use std::cell::UnsafeCell;
 use std::convert::Infallible;
 use std::fmt::Debug;
-use std::mem::{ManuallyDrop, size_of};
+use std::mem::ManuallyDrop;
 
-/// Covariant version of UnsafeCell.
+/// Covariant version of [`UnsafeCell`][`std::cell::UnsafeCell`].
 #[repr(C)]
-pub(crate) union CovUnsafeCell<T, const T_SIZE: usize> {
-    cell: ManuallyDrop<UnsafeCell<[u8; T_SIZE]>>,
-    value: ManuallyDrop<T>
+pub(crate) union CovUnsafeCell<T> {
+    value: ManuallyDrop<T>,
+    cell: ManuallyDrop<UnsafeCell<()>>
 }
 
-impl<T, const T_SIZE: usize> CovUnsafeCell<T, T_SIZE> {
-    /// # Panics
-    /// 
-    /// Panics if `T_SIZE` < `size_of::<T>()`.
-    /// This is necessary in order for the `*mut T` pointer from `.get` to safely
-    /// access the stored value `T`.
+impl<T> CovUnsafeCell<T> {
+    /// Initializes a new `CovUnsafeCell` with the provided value.
     pub fn new(t: T) -> Self {
-        assert!(
-            T_SIZE >= size_of::<T>(), 
-            "cell needed {} bytes for safe access, but it only got {T_SIZE} bytes",
-            size_of::<T>()
-        );
         CovUnsafeCell { value: ManuallyDrop::new(t) }
     }
 
@@ -34,9 +25,13 @@ impl<T, const T_SIZE: usize> CovUnsafeCell<T, T_SIZE> {
     /// - changes are only done prior to any downcast
     /// - changes are lifetime agnostic
     pub fn get(&self) -> *mut T {
-        // SAFETY: If the pointer exceeds the size of `T`,
-        // the UnsafeCell can access all of the space shared by `T`.
-        unsafe { &self.cell }.get() as *mut T 
+        unsafe {
+            // SAFETY: The space has an UnsafeCell in it, which indicates
+            // that & optimizations are not applied.
+            // Thus, this can be treated as an UnsafeCell<T>.
+            let cell: &UnsafeCell<T> = std::mem::transmute(self);
+            cell.get()
+        }
     }
     pub fn get_mut(&mut self) -> &mut T {
         // SAFETY: Since only way to init CovUnsafeCell is a value initialization,
@@ -56,16 +51,26 @@ impl<T, const T_SIZE: usize> CovUnsafeCell<T, T_SIZE> {
         val
     }
     pub fn raw_get(this: *const Self) -> *mut T {
-        UnsafeCell::raw_get(this as *const UnsafeCell<[u8; T_SIZE]>) as *mut T
+        UnsafeCell::raw_get(this as *const UnsafeCell<T>) as *mut T
     }
 }
-impl<T, const T_SIZE: usize> Debug for CovUnsafeCell<T, T_SIZE> {
+impl<T> Debug for CovUnsafeCell<T> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("CovUnsafeCell")
             .finish_non_exhaustive()
     }
 }
-impl<T, const T_SIZE: usize> Drop for CovUnsafeCell<T, T_SIZE> {
+impl<T: Default> Default for CovUnsafeCell<T> {
+    fn default() -> Self {
+        CovUnsafeCell::new(Default::default())
+    }
+}
+impl<T> From<T> for CovUnsafeCell<T> {
+    fn from(value: T) -> Self {
+        CovUnsafeCell::new(value)
+    }
+}
+impl<T> Drop for CovUnsafeCell<T> {
     // SAFETY: Only way to init CovUnsafeCell is a value initialization
     fn drop(&mut self) {
         unsafe {
@@ -74,15 +79,12 @@ impl<T, const T_SIZE: usize> Drop for CovUnsafeCell<T, T_SIZE> {
     }
 }
 
-/// Covariant version of OnceCell.
-pub(crate) struct CovOnceCell<T, const OT_SIZE: usize> {
-    inner: CovUnsafeCell<Option<T>, OT_SIZE>
+/// Covariant version of [`OnceCell`][`std::cell::OnceCell`].
+pub(crate) struct CovOnceCell<T> {
+    inner: CovUnsafeCell<Option<T>>
 }
-impl<T, const OT_SIZE: usize> CovOnceCell<T, OT_SIZE> {
-    /// # Panics
-    /// 
-    /// Panics if `OT_SIZE` < `size_of::<Option<T>>()`.
-    /// This is necessary in order for this cell's operations to be valid.
+impl<T> CovOnceCell<T> {
+    /// Initializes a new empty `CovOnceCell`.
     pub fn new() -> Self {
         CovOnceCell { inner: CovUnsafeCell::new(None) }
     }
@@ -141,7 +143,7 @@ impl<T, const OT_SIZE: usize> CovOnceCell<T, OT_SIZE> {
         self.inner.get_mut().take()
     }
 }
-impl<T: Debug, const OT_SIZE: usize> Debug for CovOnceCell<T, OT_SIZE> {
+impl<T: Debug> Debug for CovOnceCell<T> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self.get() {
             Some(t) => f.debug_tuple("CovOnceCell").field(t).finish(),
@@ -149,26 +151,40 @@ impl<T: Debug, const OT_SIZE: usize> Debug for CovOnceCell<T, OT_SIZE> {
         }
     }
 }
-impl<T: PartialEq, const OT_SIZE: usize> PartialEq for CovOnceCell<T, OT_SIZE> {
+impl<T> Default for CovOnceCell<T> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+impl<T: Clone> Clone for CovOnceCell<T> {
+    fn clone(&self) -> Self {
+        CovOnceCell { inner: CovUnsafeCell::new(self.get().cloned()) }
+    }
+}
+impl<T> From<T> for CovOnceCell<T> {
+    fn from(value: T) -> Self {
+        CovOnceCell { inner: CovUnsafeCell::new(Some(value)) }
+    }
+}
+impl<T: PartialEq> PartialEq for CovOnceCell<T> {
     fn eq(&self, other: &Self) -> bool {
         self.get() == other.get()
     }
 }
-impl<T: Eq, const OT_SIZE: usize> Eq for CovOnceCell<T, OT_SIZE> {}
+impl<T: Eq> Eq for CovOnceCell<T> {}
 
 /// A cell which holds a value which can be taken at any time with a immutable reference.
-pub(crate) struct TakeCell<T, const OT_SIZE: usize> {
-    inner: CovUnsafeCell<Option<T>, OT_SIZE>
+pub(crate) struct TakeCell<T> {
+    inner: CovUnsafeCell<Option<T>>
 }
-impl<T, const OT_SIZE: usize> TakeCell<T, OT_SIZE> {
-    /// # Panics
-    /// 
-    /// Panics if `OT_SIZE` < `size_of::<Option<T>>()`.
-    /// This is necessary in order for this cell's operations to be valid.
-    pub fn new(t: Option<T>) -> Self {
-        TakeCell { inner: CovUnsafeCell::new(t) }
+impl<T> TakeCell<T> {
+    /// Initializes a new `TakeCell` with the provided value.
+    pub fn new(t: T) -> Self {
+        TakeCell::from(Some(t))
     }
-
+    pub fn empty() -> Self {
+        TakeCell::from(None)
+    }
     pub fn take(&self) -> Option<T> {
         // SAFETY: Covariance is maintained because taking can't
         // mutate a memory location with a lifetime dependent value
@@ -183,22 +199,33 @@ impl<T, const OT_SIZE: usize> TakeCell<T, OT_SIZE> {
         self.inner.into_inner()
     }
 }
-
+impl<T> From<Option<T>> for TakeCell<T> {
+    fn from(value: Option<T>) -> Self {
+        TakeCell { inner: CovUnsafeCell::new(value) }
+    }
+}
+impl<T: Default> Default for TakeCell<T> {
+    fn default() -> Self {
+        Self::new(Default::default())
+    }
+}
+impl<T: Clone> Clone for TakeCell<T> {
+    fn clone(&self) -> Self {
+        Self::from(unsafe { &*self.inner.get() }.clone())
+    }
+}
 /// Covariant version of LazyCell.
-pub(crate) struct CovLazyCell<T, F, const OT_SIZE: usize, const OF_SIZE: usize> {
-    inner: CovOnceCell<T, OT_SIZE>,
-    init: TakeCell<F, OF_SIZE>
+pub(crate) struct CovLazyCell<T, F> {
+    inner: CovOnceCell<T>,
+    init: TakeCell<F>
 }
 
-impl<T, F, const OT_SIZE: usize, const OF_SIZE: usize> CovLazyCell<T, F, OT_SIZE, OF_SIZE> 
+impl<T, F> CovLazyCell<T, F> 
     where F: FnOnce() -> T
 {
-    /// # Panics
-    /// 
-    /// Panics if `OT_SIZE` < `size_of::<Option<T>>()` or `OF_SIZE` < `size_of::<Option<F>>()`.
-    /// This is necessary in order for this cell's operations to be valid.
+    /// Creates a new `CovLazyCell` with the provided initializer.
     pub fn new(f: F) -> Self {
-        CovLazyCell { inner: CovOnceCell::new(), init: TakeCell::new(Some(f)) }
+        CovLazyCell { inner: CovOnceCell::new(), init: TakeCell::new(f) }
     }
 
     pub fn force(&self) -> &T {
@@ -213,10 +240,19 @@ impl<T, F, const OT_SIZE: usize, const OF_SIZE: usize> CovLazyCell<T, F, OT_SIZE
         }
     }
 }
+impl<T: Debug, F> Debug for CovLazyCell<T, F> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let mut tpl = f.debug_tuple("CovLazyCell");
+        
+        match self.inner.get() {
+            Some(t) => tpl.field(t),
+            None => tpl.field(&"?"),
+        }.finish()
+    }
+}
 #[cfg(test)]
 mod tests {
     use std::marker::PhantomData;
-    use std::mem::size_of;
 
     use super::CovUnsafeCell;
     
@@ -228,7 +264,7 @@ mod tests {
     #[test]
     fn is_miri_happy() {
         unsafe {
-            let z = CovUnsafeCell::<Foo, { size_of::<Foo>() }>::new(Foo(0));
+            let z = CovUnsafeCell::new(Foo(0));
             z.get().write(Foo(15));
             assert_eq!(*z.get(), Foo(15));
         }
@@ -236,11 +272,11 @@ mod tests {
 
     #[test]
     fn is_miri_happy2() {
-        fn write<T>(c: &CovUnsafeCell<T, 1>, t: T) {
+        fn write<T>(c: &CovUnsafeCell<T>, t: T) {
             unsafe { c.get().write(t); }
         }
 
-        let cell: CovUnsafeCell<i8, 1> = CovUnsafeCell { value: std::mem::ManuallyDrop::new(14) };
+        let cell: CovUnsafeCell<i8> = CovUnsafeCell::new(14);
         write(&cell, 0);
         println!("{}", unsafe { &*cell.get() });
     }
