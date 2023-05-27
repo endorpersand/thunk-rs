@@ -272,6 +272,27 @@ impl<'a, F: Thunkable> Thunkable for &'a mut Thunk<F::Item, F> {
         self.force_mut()
     }
 }
+impl<F: Thunkable> std::ops::Not for Thunk<F::Item, F> {
+    type Output = F::Item;
+
+    fn not(self) -> Self::Output {
+        self.dethunk()
+    }
+}
+impl<'a, F: Thunkable> std::ops::Not for &'a Thunk<F::Item, F> {
+    type Output = &'a F::Item;
+
+    fn not(self) -> Self::Output {
+        self.force()
+    }
+}
+impl<'a, F: Thunkable> std::ops::Not for &'a mut Thunk<F::Item, F> {
+    type Output = &'a mut F::Item;
+
+    fn not(self) -> Self::Output {
+        self.force_mut()
+    }
+}
 impl<F: Thunkable> std::fmt::Debug for Thunk<F::Item, F> 
     where F::Item: std::fmt::Debug
 {
@@ -399,6 +420,7 @@ impl<'a, T: Default + 'a> Default for ThunkAny<'a, T> {
 
 #[cfg(test)]
 mod tests {
+    use crate::iter::ThunkItertools;
     use crate::transform::Seq;
     use crate::{Thunk, Thunkable, ThunkFn};
 
@@ -451,7 +473,7 @@ mod tests {
             });
         y.set(it).ok().unwrap();
         let m: Vec<_> = m.into_iter()
-            .map(Thunk::force)
+            .forced()
             .copied()
             .collect();
         println!("{m:?}");
