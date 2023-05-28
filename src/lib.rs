@@ -1,72 +1,142 @@
-pub mod tuple;
+//! A library for handling thunk (lazily-evaluated) values.
+//! 
+//! This is similar to `LazyCell`, but extends its functionality.
+//! 
+//! ```
+//! # use thunk::Thunk;
+//! # use thunk::ThunkAny;
+//! # use thunk::Thunkable;
+//! # use thunk::Seq;
+//! # 
+//! fn add<'a>(l: &'a ThunkAny<'a, &'a usize>, r: &'a ThunkAny<'a, &'a usize>) 
+//!     -> Thunk<usize, impl Thunkable<Item = usize> + 'a> 
+//! {
+//!     Seq(l, r)
+//!         .map(|(&l, &r)| l + r)
+//!         .into_thunk()
+//! }
+//! 
+//! let t = 10;
+//! let a = Thunk::new(|| {
+//! println!("initialized 10");
+//! &t
+//! }).into_thunk_any();
+//! 
+//! {
+//!     let u = 20;
+//!     let b = Thunk::new(|| {
+//!         println!("initialized 20");
+//!         &u
+//!     }).into_thunk_any();
+//! 
+//!     assert_eq!(add(&a, &b).force(), &30);
+//! }
+//! 
+//! assert_eq!(a.dethunk(), &10);
+//! ```
+
+pub mod concat;
 pub mod transform;
 pub mod list;
 mod cell;
 pub mod iter;
 use cell::{TakeCell, CovOnceCell};
-pub use transform::zip;
+pub use transform::{zip, Seq};
 
 use std::marker::PhantomData;
 use std::mem::ManuallyDrop;
 use std::ptr::NonNull;
 use std::rc::Rc;
 
+/// This trait is applied to types that can be used to generate a value once.
+/// 
+/// These act as initializers for a thunk value in [`Thunk`].
+/// These `Thunkable`s can also have special transformations applied to them,
+/// similar to iterator transformers.
 pub trait Thunkable {
+    /// Type that this `Thunkable` generates.
     type Item;
+    /// Initializes a new `Self::Item` from this initializer.
     fn resolve(self) -> Self::Item;
 
+    /// Wraps this `Thunkable` into a [`Thunk`].
     fn into_thunk(self) -> Thunk<Self::Item, Self> 
         where Self: Sized
     {
         Thunk::new(self)
     }
+    /// Converts this Thunkable into a [`ThunkBox`].
+    /// 
+    /// This is a heap-allocated pointer to an initializer for `Self::Item`
+    /// which does not preserve details about the initializer.
+    /// 
+    /// It is meant to be a drop-in replacement for `Box<dyn Thunkable>`.
     fn into_box<'a>(self) -> ThunkBox<'a, Self::Item> 
         where Self: Sized + 'a
     {
         ThunkBox::new(self)
     }
+    /// Converts this `Thunkable` into a [`ThunkAny`].
     fn into_thunk_any<'a>(self) -> ThunkAny<'a, Self::Item> 
         where Self: Sized + 'a
     {
         self.into_thunk().boxed()
     }
-
+    /// Maps a Thunkable's `Self::Item` to `U` by applying a mapper function
+    /// once the Thunkable is resolved.
     fn map<U, F: FnOnce(Self::Item) -> U>(self, f: F) -> transform::Map<Self, F> 
         where Self: Sized
     {
         transform::Map(self, f)
     }
+    /// Maps a Thunkable's `Self::Item` to `U::Item` by applying a mapper function
+    /// and resolving the returned `Thunkable` once this `Thunkable` is resolved.
     fn and_then<U: Thunkable, F: FnOnce(Self::Item) -> U>(self, f: F) -> transform::AndThen<Self, F> 
         where Self: Sized
     {
         transform::AndThen(self, f)
     }
+    /// Flattens a `Thunkable` which initializes another `Thunkable`.
     fn flatten(self) -> transform::Flatten<Self> 
         where Self: Sized,
               Self::Item: Thunkable
     {
         transform::Flatten(self)
     }
+    /// Clones the initialized reference once this `Thunkable` is resolved.
     fn cloned<'a, T: 'a + Clone>(self) -> transform::Cloned<Self>
         where Self: Sized + Thunkable<Item=&'a T>,
     {
         transform::Cloned(self)
     }
+    /// Copies the initialized reference once this `Thunkable` is resolved.
     fn copied<'a, T: 'a + Copy>(self) -> transform::Copied<Self>
         where Self: Sized + Thunkable<Item=&'a T>,
     {
         transform::Copied(self)
     }
+    /// Applies an inspection function once this `Thunkable` is resolved.
     fn inspect<I: FnOnce(&Self::Item)>(self, f: I) -> transform::Inspect<Self, I>
         where Self: Sized
     {
         transform::Inspect(self, f)
     }
+    /// Collects two `Thunkable`s into a tuple. 
+    /// These can be resolved together with [`transform::ZipMap::map`].
+    /// 
+    /// More `Thunkable`s can be concatenated with [`transform::ZipMap::zip`].
+    /// 
+    /// Unlike [`Seq`], `zip` will not resolve all `Thunkable`s when the conjoining
+    /// `Thunkable` is resolved.
     fn zip<B: Thunkable>(self, b: B) -> transform::ZipMap<(Self, B), ()>
         where Self: Sized
     {
         zip(self, b)
     }
+    /// Collects two `Thunkable`s into a tuple and applies a mapper to both.
+    /// 
+    /// Unlike [`Seq`], `zip_map` will not resolve all `Thunkable`s when the conjoining
+    /// `Thunkable` is resolved.
     fn zip_map<U, B: Thunkable, F: FnOnce((Self, B)) -> U>(self, b: B, f: F) -> transform::ZipMap<(Self, B), F>
         where Self: Sized
     {
@@ -99,7 +169,7 @@ impl<T, F> ThunkInner<T, F> {
     unsafe fn force(&self, r: impl FnOnce(F) -> T) -> &T {
         self.inner.get_or_init(|| match self.init.take() {
             Some(f) => r(f),
-            None => panic!("no initializer"),
+            None => panic!("thunk does not have initializer"),
         })
     }
 
@@ -165,17 +235,28 @@ impl<T: std::fmt::Debug, F> std::fmt::Debug for ThunkInner<T, F> {
     }
 }
 
+/// A thunk value. 
+/// This can either hold an initialized value or an initializer to initialize the value.
+/// 
+/// Unlike `LazyCell`, this value is covariant over T and F, enabling a few extended uses.
+/// 
+/// This value can be initialized without an initializer as well, using [`Thunk::set`].
+/// However, once this value has been initialized it cannot be uninitialized.
 #[derive(Clone)]
 pub struct Thunk<T, F: Thunkable<Item=T>> {
     inner: ThunkInner<T, F>
 }
 impl<F: Thunkable> Thunk<F::Item, F> {
+    /// Creates a new Thunk value that is lazily initialized.
     pub fn new(f: F) -> Self {
         Thunk { inner: ThunkInner::uninitialized(f) }
     }
+    /// Creates a new Thunk value with an already resolved value.
     pub fn of(t: F::Item) -> Self {
         Thunk { inner: ThunkInner::initialized(t) }
     }
+
+    /// Initializes the value and returns an immutable reference to the value.
     pub fn force(&self) -> &F::Item {
         // SAFETY: F's lifetime matches lifetime of this Thunk at initialization, 
         // so covariance is preserved
@@ -183,21 +264,37 @@ impl<F: Thunkable> Thunk<F::Item, F> {
             self.inner.force(|f| f.resolve())
         }
     }
+    /// Initializes the value and returns a mutable reference to the value.
     pub fn force_mut(&mut self) -> &mut F::Item {
         self.force();
         self.try_get_mut().expect("force should have succeeded")
     }
+    /// Initializes the value and returns a strict value out of it.
     pub fn dethunk(self) -> F::Item {
         self.force();
         self.try_into_inner().expect("force should have succeeded")
     }
 
-    /// # Safety
+    /// Initializes the thunk value with a known value.
     /// 
-    /// Set value must match the lifetime this struct had when it was initialized.
+    /// If this thunk is already initialized, this will fail and return the argument.
+    /// 
+    /// # Safety
+    /// For this to be safely used, the lifetime of the value to set must match
+    /// the lifetime of this `Thunk` when it was initialized.
+    /// It cannot simply match the value of the `Thunk`'s current lifetime in this scope.
+    /// 
+    /// Setting a value which has a shorter lifetime than the initialized value will
+    /// result in dangling pointers.
+    /// 
+    /// If the set value is known to be `'static`, you can safely use [`Thunk::set`].
     pub unsafe fn set_unchecked(&self, val: F::Item) -> Result<(), F::Item> {
         self.inner.set(val)
     }
+
+    /// Initializes the thunk value with a known value.
+    /// 
+    /// If this thunk is already initialized, this will fail and return the argument.
     pub fn set(&self, val: F::Item) -> Result<(), F::Item> 
         where F::Item: 'static 
     {
@@ -212,7 +309,15 @@ impl<F: Thunkable> Thunk<F::Item, F> {
     /// If this thunk is already initialized, this will fail and return the thunk.
     /// 
     /// # Safety
-    /// Replacing thunk must match the lifetime this struct had when it was initialized.
+    /// For this to be safely used, the provided Thunk's lifetimes 
+    /// (for the value type and initializer type) must match the lifetimes of this `Thunk`
+    /// when it was initialized.
+    /// It cannot simply match the value of the `Thunk`'s current lifetime in this scope.
+    /// 
+    /// Setting a value which has a shorter lifetime than the initialized value will
+    /// result in dangling pointers.
+    /// 
+    /// If the new `Thunk` is known to have `'static` parameters, you can safely use [`Thunk::replace`].
     pub unsafe fn replace_unchecked(&self, thunk: Self) -> Result<(), Self> {
         self.inner.replace(thunk.inner)
             .map_err(|inner| Thunk { inner })
@@ -223,14 +328,22 @@ impl<F: Thunkable> Thunk<F::Item, F> {
     pub fn replace(&self, thunk: Self) -> Result<(), Self> 
         where F::Item: 'static, F: 'static
     {
+        // Since F is 'static, this value cannot be dropped before
+        // the cell is dropped.
         unsafe {
             self.replace_unchecked(thunk)
         }
     }
+    /// Checks whether the Thunk has been initialized.
     pub fn is_initialized(&self) -> bool {
         self.inner.is_initialized()
     }
-
+    /// Converts the initializer value into a [`ThunkBox`].
+    /// 
+    /// This is a heap-allocated pointer to an initializer for `Self::Item`
+    /// which does not preserve details about the initializer.
+    /// 
+    /// It is meant to be a drop-in replacement for `Box<dyn Thunkable>`.
     pub fn boxed<'a>(self) -> ThunkAny<'a, F::Item>
         where F: 'a
     {
@@ -242,14 +355,17 @@ impl<F: Thunkable> Thunk<F::Item, F> {
             }
         }
     }
-    /// If the Rc is known to only be referenced once, this can be used
-    /// to unwrap and dethunk the Rc.
+    /// For a `Rc<Thunk>`, this unwraps and dethunks the value.
+    /// 
+    /// If the Rc is referenced more than once, this will panic.
     pub fn unwrap_dethunk(self: Rc<Self>) -> F::Item {
         match Rc::try_unwrap(self) {
             Ok(thunk) => !thunk,
             Err(e) => panic!("couldn't unwrap Rc, has {} references", Rc::strong_count(&e)),
         }
     }
+    /// For a `Rc<Thunk>` which has a clonable value type, this will initialize the value.
+    /// If there is more than one reference to the given Rc, the value is cloned out of the thunk.
     pub fn dethunk_or_clone(self: Rc<Self>) -> F::Item 
         where F::Item: Clone
     {
@@ -259,12 +375,15 @@ impl<F: Thunkable> Thunk<F::Item, F> {
         }
     }
 
+    /// Returns an immutable reference to the inner value if it is initialized.
     pub fn try_get(&self) -> Option<&F::Item> {
         self.inner.get()
     }
+    /// Returns a mutable reference to the inner value if it is initialized.
     pub fn try_get_mut(&mut self) -> Option<&mut F::Item> {
         self.inner.get_mut()
     }
+    /// Consumes the thunk, returning the inner value if it is initialized.
     pub fn try_into_inner(self) -> Option<F::Item> {
         self.inner.into_inner()
     }
@@ -364,8 +483,12 @@ impl<F: Thunkable> std::fmt::Debug for Thunk<F::Item, F>
     }
 }
 
+/// A thunk whose initializers are function pointers.
 pub type ThunkFn<T> = Thunk<T, fn() -> T>;
 impl<T> ThunkFn<T> {
+    /// Creates a Thunk which panics when initialized.
+    /// 
+    /// Similar to Haskell bottom.
     pub fn undef() -> Self {
         Thunk::new(|| panic!("undef"))
     }
@@ -406,6 +529,7 @@ impl<F: Thunkable> ThunkDrop for Option<F> {
 pub struct ThunkBox<'a, T>(NonNull<dyn ThunkDrop<Item=()> + 'a>, PhantomData<&'a T>);
 
 impl<'a, T> ThunkBox<'a, T> {
+    /// Creates a new `ThunkBox` out of a [`Thunkable`].
     pub fn new<F: Thunkable<Item=T> + 'a>(f: F) -> Self {
         let ptr = unsafe {
             let p = Box::into_raw(Box::new(Some(f)))
@@ -457,18 +581,41 @@ impl<'a, T> Drop for ThunkBox<'a, T> {
 pub type ThunkAny<'a, T> = Thunk<T, ThunkBox<'a, T>>;
 
 impl<'a, T> ThunkAny<'a, T> {
+    /// Creates a Thunk which panics when initialized.
+    /// 
+    /// Similar to Haskell bottom.
     pub fn undef() -> Self {
-        (|| panic!("undef")).into_thunk_any()
+        ThunkFn::undef().boxed()
     }
+    /// The fixed combinator.
+    /// 
+    /// This is a fixed point for a given function. For example:
+    /// ```
+    /// # use thunk::ThunkAny;
+    /// assert_eq!(ThunkAny::fix(|_| 5).dethunk(), 5);
+    /// 
+    /// let t = ThunkAny::<Box<dyn FnOnce(usize) -> usize>>::fix(|f| {
+    ///     Box::new(move |n| match n {
+    ///         0 => 1,
+    ///         n => f.dethunk()(n - 1) * n
+    ///     })
+    /// }).dethunk();
+    /// assert_eq!(t(5), 120);
+    /// ```
+    /// 
+    /// This is not very powerful (especially when considering the Haskell version)...
+    /// but it's very fun
     pub fn fix(f: fn(ThunkAny<'a, T>) -> T) -> ThunkAny<'a, T> {
         (move || f(Self::fix(f))).into_thunk_any()
     }
 }
 impl<'a, T: Clone> ThunkAny<'a, T> {
+    /// For an Rc<Thunk>, this unwraps the thunk 
+    /// or creates a new Thunk which clones the value when it needs to initialize.
     pub fn unwrap_or_clone(self: Rc<Self>) -> Self {
         match Rc::try_unwrap(self) {
             Ok(t) => t,
-            Err(e) => (move || e.force().clone()).into_thunk_any(),
+            Err(rc) => (move || rc.dethunk_or_clone()).into_thunk_any(),
         }
     }
 }

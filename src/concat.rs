@@ -1,5 +1,12 @@
+//! A util to append elements to a tuple.
+//! See [`TupleConcat`] for more details.
+
+/// A trait which enables concatenation for tuples up to length 12.
 pub trait TupleConcat {
+    /// The type of newly constructed tuple after concatenating an element to it.
     type Out<T>;
+
+    /// Constructs a new tuple after concatenating the provided element.
     fn concat<T>(self, t: T) -> Self::Out<T>;
 }
 
