@@ -173,7 +173,9 @@ impl<T: PartialEq> PartialEq for CovOnceCell<T> {
 }
 impl<T: Eq> Eq for CovOnceCell<T> {}
 
-/// A cell which holds a value which can be taken at any time with a immutable reference.
+/// A cell which only allows one read via immutable reference.
+/// 
+/// This cell is covariant over T.
 pub(crate) struct TakeCell<T> {
     inner: CovUnsafeCell<Option<T>>
 }
@@ -186,11 +188,22 @@ impl<T> TakeCell<T> {
         TakeCell::from(None)
     }
     pub fn take(&self) -> Option<T> {
-        // SAFETY: Covariance is maintained because taking can't
+        // SAFETY: 
+        // - Covariance is maintained because taking can't
         // mutate a memory location with a lifetime dependent value
-        //
-        // There is no other way to read the data here, so we're fine.
+        // - Since we cannot have a reference to the inner value, 
+        // mutation is allowed.
         unsafe { &mut *self.inner.get() }.take()
+    }
+    /// # Safety
+    /// T being inserted into this function must meet covariance 
+    /// (it must match the lifetime of this cell on initialization).
+    pub unsafe fn replace(&self, t: T) -> Option<T> {
+        // SAFETY: 
+        // - User must verify covariance
+        // - Since we cannot have a reference to the inner value, 
+        // mutation is allowed.
+        unsafe { &mut *self.inner.get() }.replace(t)
     }
     pub fn get_mut(&mut self) -> Option<&mut T> {
         self.inner.get_mut().as_mut()
@@ -206,7 +219,7 @@ impl<T> From<Option<T>> for TakeCell<T> {
 }
 impl<T: Default> Default for TakeCell<T> {
     fn default() -> Self {
-        Self::new(Default::default())
+        Self::new(T::default())
     }
 }
 impl<T: Clone> Clone for TakeCell<T> {

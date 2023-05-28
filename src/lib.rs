@@ -120,6 +120,29 @@ impl<T, F> ThunkInner<T, F> {
         self.init.take();
         self.inner.set(val)
     }
+    /// # Safety
+    /// 
+    /// Replacing thunk must match the lifetime this struct had when it was initialized.
+    unsafe fn replace(&self, thunk: Self) -> Result<(), Self> {
+        if !self.is_initialized() {
+            let Self { inner, init } = thunk;
+
+            if let Some(val) = inner.into_inner() {
+                // SAFETY: user has to assert cov
+                self.set(val)
+                    .unwrap_or_else(|_| unreachable!());
+            } else if let Some(init) = init.take() {
+                // SAFETY: user has to assert cov
+                self.init.replace(init);
+            } else {
+                panic!("replacing thunk cannot be initialized")
+            }
+
+            Ok(())
+        } else {
+            Err(thunk)
+        }
+    }
     fn is_initialized(&self) -> bool {
         self.inner.get().is_some()
     }
@@ -182,6 +205,26 @@ impl<F: Thunkable> Thunk<F::Item, F> {
         // the cell is dropped.
         unsafe {
             self.inner.set(val)
+        }
+    }
+
+    /// Replaces this thunk's initializer with another thunk's initializer.
+    /// If this thunk is already initialized, this will fail and return the thunk.
+    /// 
+    /// # Safety
+    /// Replacing thunk must match the lifetime this struct had when it was initialized.
+    pub unsafe fn replace_unchecked(&self, thunk: Self) -> Result<(), Self> {
+        self.inner.replace(thunk.inner)
+            .map_err(|inner| Thunk { inner })
+    }
+
+    /// Replaces this thunk's initializer with another thunk's initializer.
+    /// If this thunk is already initialized, this will fail and return the thunk.
+    pub fn replace(&self, thunk: Self) -> Result<(), Self> 
+        where F::Item: 'static, F: 'static
+    {
+        unsafe {
+            self.replace_unchecked(thunk)
         }
     }
     pub fn is_initialized(&self) -> bool {

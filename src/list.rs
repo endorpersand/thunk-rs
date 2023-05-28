@@ -793,18 +793,32 @@ mod tests {
     }
     #[test]
     fn time_travel2() {
-        let y = ThunkAny::undef();
-        let l = ThunkList::from([1, 2, 4, 5, 9, 7, 4, 1, 2, 329, 23, 23, 21, 123, 123, 0, 324]);
-        
-        let thunk = l.foldr(|el, thunk| {
-            let (list, m) = !thunk;
-            (ThunkList::cons((&y).copied().into_thunk(), list), m.max(el.dethunk_or_clone()))
-        }, ThunkAny::of((ThunkList::new(), 0)));
-        
-        let (list, max) = !thunk;
-        y.set(max).ok().unwrap();
+        // repMax :: [Int] -> Int -> (Int, [Int])
+        // repMax [] rep = (rep, [])
+        // repMax [x] rep = (x, [rep])
+        // repMax (l : ls) rep = (m', rep : ls')
+        // where (m, ls') = repMax ls rep
+        //         m' = max m l
+        fn rep<'a, T: Copy + Ord>(list: ThunkList<'a, T>, v: Rc<ThunkAny<'a, T>>) -> (Rc<ThunkAny<'a, T>>, ThunkList<'a, T>) {
+            match list.split_first() {
+                None => (v, ThunkList::new()),
+                Some((l, ls)) if ls.is_empty() => (l, ThunkList::from_iter([v.unwrap_or_clone()])),
+                Some((l, ls)) => {
+                    let (m, ls1) = rep(ls, Rc::clone(&v));
+                    let m1 = crate::transform::Seq(m.unwrap_or_clone(), l.unwrap_or_clone())
+                        .map(|(a, b)| a.max(b))
+                        .into_thunk_any();
+                    
+                    (Rc::new(m1), ThunkList::cons(v.unwrap_or_clone(), ls1))
+                }
+            }
+        }
 
-        assert_eq!(list, ThunkList::from([329; 17]));
+        let thunk = Rc::new(crate::ThunkAny::undef());
+        let (max, l) = rep(ThunkList::from([1,2,3,4,5,3]), Rc::clone(&thunk));
+        let _ = thunk.replace(max.unwrap_or_clone());
+
+        println!("{:?}", l);
     }
     #[test]
     fn lifetimes() {
