@@ -560,12 +560,14 @@ impl<'a, T> TailPtr<'a, T> {
     /// At this point, the tail no longer represents the end of the list
     /// and is resultantly consumed.
     pub fn bind(self, l: &ThunkList<'a, T>) {
-        let val = l.head.force().cloned();
+        let thunk = ThunkAny::of(l.clone())
+            .map(|l| l.head.dethunk_inner())
+            .into_thunk_any();
 
         // SAFETY: TailPtr is invariant over Node<'a, T>, 
         // so parameters will match lifetime of initialized TailPtr.
         unsafe {
-            self.ptr.set_unchecked(val)
+            self.ptr.replace_unchecked(thunk)
                 .ok()
                 .expect("TailPtr should not have been set")
         }
@@ -1088,5 +1090,25 @@ mod tests {
         assert_eq!(list03a.list_len(), (0, 3));
         assert_eq!(list03b.list_len(), (0, 6));
         assert_eq!(list03a, list03b);
+    }
+
+    #[test]
+    fn super_lazy() {
+        use std::cell::Cell;
+
+        let access = Cell::new(false);
+        let x = ThunkList::from((|| {
+            println!("peeking at your little list");
+            println!("i see nothing.");
+            access.set(true);
+
+            ThunkList::new()
+        }).into_thunk_any());
+        
+        let (ptr, list) = ThunkList::tailed();
+        let _ = ThunkList::from(([0, 1, 2, 3], list));
+        
+        ptr.bind(&x);
+        assert!(!access.get());
     }
 }
