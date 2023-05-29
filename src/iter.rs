@@ -1,30 +1,48 @@
+//! Utilities to better handle [`Thunk`][`crate::Thunk`]s when used with iterators.
+
 use std::iter::FusedIterator;
 
 use crate::list::ThunkList;
 use crate::{Thunk, Thunkable, transform};
 
+/// A set of methods to apply onto iterators to better interop with thunks.
+/// 
+/// These can be accessed by importing this trait.
 pub trait ThunkItertools: Iterator {
+    /// Like [`Iterator::map`], but instead of evaluating the result,
+    /// it is delegated to a thunk which will lazily evaluates the result
+    /// when it is needed.
     fn map_delayed<U, F>(self, f: F) -> MapThunk<Self, F>
         where Self: Sized,
             F: FnMut(Self::Item) -> U + Copy
     {
         MapThunk(self, f)
     }
+    /// Evaluates all the thunks in this iterator and returns a reference to the value.
     fn forced<'a, F: Thunkable + 'a>(self) -> Forced<Self>
         where Self: Sized + Iterator<Item=&'a Thunk<F::Item, F>>
     {
         Forced(self)
     }
+    /// Evaluates all the thunks in this iterator and returns a mutable reference to
+    /// the value.
     fn forced_mut<'a, F: Thunkable + 'a>(self) -> ForcedMut<Self>
         where Self: Sized + Iterator<Item=&'a mut Thunk<F::Item, F>>
     {
         ForcedMut(self)
     }
+    /// Evaluates all the thunks in this iterator and returns the value.
     fn resolved<F: Thunkable>(self) -> Resolved<Self>
         where Self: Sized + Iterator<Item = F>,
     {
         Resolved(self)
     }
+    /// This collector holds the iterator and uses it to build a [`ThunkList`].
+    /// 
+    /// Unlike [`Iterator::collect`], this does not evaluate every element of the iterator,
+    /// but rather evaluates new elements once they need be resolved.
+    /// 
+    /// As a result, this iterator has to last as long as the resulting `ThunkList`.
     fn collect_lazy<'a, F: Thunkable + 'a>(self) -> ThunkList<'a, F::Item>
         where Self: Sized + Iterator<Item = F> + 'a
     {
@@ -33,6 +51,7 @@ pub trait ThunkItertools: Iterator {
 }
 impl<I: Iterator> ThunkItertools for I {}
 
+/// Like [`Iterator::map`], but with lazy resolution. Created by [`ThunkItertools::map_delayed`].
 pub struct MapThunk<I, F>(I, F);
 impl<R, I: Iterator, F: FnMut(I::Item) -> R + Copy> Iterator for MapThunk<I, F> {
     type Item = Thunk<R, transform::Map<Thunk<I::Item, crate::transform::Known<I::Item>>, F>>;
@@ -53,6 +72,7 @@ impl<R, I: ExactSizeIterator, F: FnMut(I::Item) -> R + Copy> ExactSizeIterator f
 }
 impl<R, I: FusedIterator, F: FnMut(I::Item) -> R + Copy> FusedIterator for MapThunk<I, F> {}
 
+/// Forces all thunks in the iterator. Created by [`ThunkItertools::forced`].
 pub struct Forced<I>(I);
 impl<'a, I, F> Iterator for Forced<I>
     where F: Thunkable + 'a,
@@ -85,6 +105,7 @@ impl<'a, I, F> FusedIterator for Forced<I>
         I: FusedIterator<Item=&'a Thunk<F::Item, F>>
 {}
 
+/// Forces all thunks in the iterator. Created by [`ThunkItertools::forced_mut`].
 pub struct ForcedMut<I>(I);
 impl<'a, I, F> Iterator for ForcedMut<I>
     where F: Thunkable + 'a,
@@ -117,6 +138,7 @@ impl<'a, I, F> FusedIterator for ForcedMut<I>
         I: FusedIterator<Item=&'a mut Thunk<F::Item, F>>
 {}
 
+/// Resolves all thunkables in the iterator. Created by [`ThunkItertools::resolved`].
 pub struct Resolved<I>(I);
 impl<I, F> Iterator for Resolved<I>
     where F: Thunkable,

@@ -1,3 +1,7 @@
+//! Provides a linked list utility that takes advantage of [`Thunk`][`crate::Thunk`]'s lazy nature.
+//! 
+//! This is heavily inspired by Haskell's `List`.
+
 use std::marker::PhantomData;
 use std::mem::ManuallyDrop;
 use std::rc::Rc;
@@ -316,17 +320,28 @@ impl<'a, T> ThunkList<'a, T> {
 
         (left, tail, right)
     }
+    /// Splits the list into two, one for all elements left of index `n` 
+    /// and one for all elements right of `n`
+    /// 
+    /// This is a strict operation which immediately splits the list.
     pub fn split_at(self, n: usize) -> (ThunkList<'a, T>, ThunkList<'a, T>) {
         let (left, ltail, right) = self.cursor(n);
         ltail.close();
         (left, right)
     }
+    /// Inserts an element into the list at index `n`.
+    /// 
+    /// This is a strict operation which will immediately insert the new element.
     pub fn insert(self, n: usize, t: Thunk<T, impl Thunkable<Item=T> + 'a>) -> ThunkList<'a, T> {
         let (left, mut ltail, right) = self.cursor(n);
         ltail.append(t);
         ltail.bind(&right);
         left
     }
+    /// Applies a left fold on the list, which is not evaluated until the returned Thunk is.
+    /// 
+    /// This is (somewhat) equivalent to `foldl` in Haskell, and the same warnings apply.
+    /// `foldl'` is equivalent to `self.into_iter().fold()`.
     pub fn foldl<U, F>(self, f: F, base: Thunk<U, impl Thunkable<Item=U> + 'a>) -> ThunkAny<'a, U> 
         where F: FnMut(ThunkAny<'a, U>, Rc<ThunkAny<'a, T>>) -> U + Copy + 'a
     {
@@ -346,6 +361,9 @@ impl<'a, T> ThunkList<'a, T> {
 
         foldl_node(self.head, f, base.boxed())
     }
+    /// Applies a right fold on the list, which is not evaluated until the returned Thunk is.
+    /// 
+    /// This is (somewhat) equivalent to `foldr` in Haskell, and the same benefits apply.
     pub fn foldr<U, F>(self, f: F, base: Thunk<U, impl Thunkable<Item=U> + 'a>) -> ThunkAny<'a, U> 
         where F: FnMut(Rc<ThunkAny<'a, T>>, ThunkAny<'a, U>) -> U + Copy + 'a
     {
@@ -363,12 +381,21 @@ impl<'a, T> ThunkList<'a, T> {
 
         foldr_node(self.head, f, base.boxed())
     }
+    /// Returns an iterable of thunk references.
     pub fn iter(&self) -> Iter<T> {
         Iter(&self.head)
     }
+    /// Returns an iterable of evaluated values.
+    /// 
+    /// Note that every element of this iterator will be evaluated even if never used.
+    /// If some elements are not used and don't need to be evaluated, 
+    /// it is better to use [`ThunkList::iter`].
     pub fn iter_strict(&self) -> IterStrict<T> {
         IterStrict(&self.head)
     }
+    /// Checks if this list contains a given element.
+    /// 
+    /// This will evaluate the list up until the value is found.
     pub fn contains(&self, t: &T) -> bool 
         where T: PartialEq
     {
@@ -410,9 +437,10 @@ impl<'a, T> ThunkList<'a, T> {
     pub fn is_empty(&self) -> bool {
         self.head.force().is_none()
     }
-    pub fn iterate_known(mut f: impl FnMut() -> Option<T> + 'a) -> ThunkList<'a, T> {
-        ThunkList::iterate(move || f().map(ThunkAny::of))
-    }
+    /// Creates a new `ThunkList` by repeatedly calling the provided function to obtain the element thunks.
+    /// This does not generate the new element until it is needed.
+    /// 
+    /// The function must last as long as the list in order to facilitate the resolution of new elements.
     pub fn iterate<F>(f: impl FnMut() -> Option<Thunk<T, F>> + 'a) -> ThunkList<'a, T> 
         where F: Thunkable<Item=T> + 'a
     {
@@ -431,6 +459,16 @@ impl<'a, T> ThunkList<'a, T> {
 
         ThunkList { head: iterate_node(f) }
     }
+    /// Creates a new `ThunkList` by repeatedly calling the provided function to obtain the element values.
+    /// This does not generate the new element until it is needed.
+    /// 
+    /// The function must last as long as the list in order to facilitate the resolution of new elements.
+    pub fn iterate_known(mut f: impl FnMut() -> Option<T> + 'a) -> ThunkList<'a, T> {
+        ThunkList::iterate(move || f().map(ThunkAny::of))
+    }
+    /// Creates a new `ThunkList` by repeatedly calling the provided function to obtain element thunks.
+    /// Unlike [`ThunkList::iterate`] and [`ThunkList::iterate_known`], 
+    /// this generates **all** of the elements at initialization rather than waiting until it is needed.
     pub fn iterate_strict<F>(f: impl FnMut() -> Option<Thunk<T, F>>) -> ThunkList<'a, T> 
         where F: Thunkable<Item=T> + 'a
     {
@@ -440,6 +478,11 @@ impl<'a, T> ThunkList<'a, T> {
         tail.close();
         lst
     }
+    /// Creates a new `ThunkList` from an iterator. Unlike [`ThunkList::from_iter`],
+    /// this only generates new elements once they are needed.
+    /// 
+    /// As such, the iterator needs to last as long as the list in order to facilitate the resolution
+    /// of new elements.
     pub fn from_iter_lazy<F, I>(iter: I) -> ThunkList<'a, T> 
         where F: Thunkable<Item=T> + 'a,
             I: IntoIterator<Item=Thunk<T, F>> + 'a
@@ -473,6 +516,7 @@ impl<'a, T, F> From<Thunk<ThunkList<'a, T>, F>> for ThunkList<'a, T>
     }
 }
 
+/// A special pointer used to append elements to the tail of a list.
 pub struct TailPtr<'a, T> {
     ptr: Rc<MaybeNode<'a, T>>,
     // Force invariance on 'a, T
@@ -511,6 +555,10 @@ impl<'a, T> TailPtr<'a, T> {
         self.raw_append(Rc::new(val.boxed()))
     }
 
+    /// Attaches a list to the tail. 
+    /// 
+    /// At this point, the tail no longer represents the end of the list
+    /// and is resultantly consumed.
     pub fn bind(self, l: &ThunkList<'a, T>) {
         let val = l.head.force().cloned();
 
@@ -522,6 +570,10 @@ impl<'a, T> TailPtr<'a, T> {
                 .expect("TailPtr should not have been set")
         }
     }
+    /// Closes the list at this tail element.
+    /// 
+    /// At this point, the tail is known to not have any elements
+    /// and is resultantly consumed.
     pub fn close(self) {
         // SAFETY: None is not dependent on lifetime.
         unsafe {
@@ -581,6 +633,7 @@ impl<T: Ord> Ord for ThunkList<'_, T> {
     }
 }
 
+/// An iterator of thunk references. Created by [`ThunkList::iter`].
 pub struct Iter<'r, T>(&'r NodePtr<'r, T>);
 impl<'r, T> Iterator for Iter<'r, T> {
     type Item = &'r ThunkAny<'r, T>;
@@ -592,6 +645,7 @@ impl<'r, T> Iterator for Iter<'r, T> {
         Some(val.as_ref())
     }
 }
+/// An iterator of evaluated values. Created by [`ThunkList::iter_strict`]. See warnings there.
 pub struct IterStrict<'r, T>(&'r NodePtr<'r, T>);
 impl<'r, T> Iterator for IterStrict<'r, T> {
     type Item = &'r T;
@@ -604,6 +658,7 @@ impl<'r, T> Iterator for IterStrict<'r, T> {
     }
 }
 
+/// An iterator through a [`ThunkList`]. Created by [`ThunkList::into_iter`].
 pub struct IntoIter<'a, T>(Option<ThunkList<'a, T>>);
 impl<'a, T> Iterator for IntoIter<'a, T> {
     type Item = Rc<ThunkAny<'a, T>>;
@@ -623,12 +678,16 @@ impl<'a, T> IntoIterator for ThunkList<'a, T> {
     }
 }
 impl<A> FromIterator<A> for ThunkList<'_, A> {
+    /// Creates a new ThunkList from an iterator. This will evaluate all elements of the iterator,
+    /// rather than waiting to generate them when they are needed.
     fn from_iter<T: IntoIterator<Item = A>>(iter: T) -> Self {
         let mut it = iter.into_iter();
         ThunkList::iterate_strict(move || it.next().map(ThunkAny::of))
     }
 }
 impl<'a, A, F: Thunkable<Item=A> + 'a> FromIterator<Thunk<A, F>> for ThunkList<'a, A> {
+    /// Creates a new ThunkList from an iterator. This will evaluate all elements of the iterator,
+    /// rather than waiting to generate them when they are needed.
     fn from_iter<T: IntoIterator<Item = Thunk<A, F>>>(iter: T) -> Self {
         let mut it = iter.into_iter();
         ThunkList::iterate_strict(move || it.next())

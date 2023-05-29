@@ -1,3 +1,4 @@
+#![warn(missing_docs)]
 //! A library for handling thunk (lazily-evaluated) values.
 //! 
 //! This is similar to `LazyCell`, but extends its functionality.
@@ -41,7 +42,10 @@ pub mod list;
 mod cell;
 pub mod iter;
 use cell::{TakeCell, CovOnceCell};
+
 pub use transform::{zip, Seq};
+pub use iter::ThunkItertools;
+pub use list::ThunkList;
 
 use std::marker::PhantomData;
 use std::mem::ManuallyDrop;
@@ -610,7 +614,7 @@ impl<'a, T> ThunkAny<'a, T> {
     }
 }
 impl<'a, T: Clone> ThunkAny<'a, T> {
-    /// For an Rc<Thunk>, this unwraps the thunk 
+    /// For an `Rc<Thunk>`, this unwraps the thunk 
     /// or creates a new Thunk which clones the value when it needs to initialize.
     pub fn unwrap_or_clone(self: Rc<Self>) -> Self {
         match Rc::try_unwrap(self) {
