@@ -51,7 +51,7 @@ impl<T> CovUnsafeCell<T> {
         val
     }
     pub fn raw_get(this: *const Self) -> *mut T {
-        UnsafeCell::raw_get(this as *const UnsafeCell<T>) as *mut T
+        UnsafeCell::raw_get(this as *const UnsafeCell<T>)
     }
 }
 impl<T> Debug for CovUnsafeCell<T> {
