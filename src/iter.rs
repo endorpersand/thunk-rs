@@ -57,12 +57,16 @@ impl<R, I: Iterator, F: FnMut(I::Item) -> R + Copy> Iterator for MapThunk<I, F> 
     type Item = Thunk<R, transform::Map<Thunk<I::Item, crate::transform::Known<I::Item>>, F>>;
 
     fn next(&mut self) -> Option<Self::Item> {
-        self.0.next().map(|t| Thunk::from(t).map(self.1).into_thunk())
+        self.0.next()
+            .map(|t| Thunk::from(t).map(self.1))
+            .map(Thunk::new)
     }
 }
 impl<R, I: DoubleEndedIterator, F: FnMut(I::Item) -> R + Copy> DoubleEndedIterator for MapThunk<I, F> {
     fn next_back(&mut self) -> Option<Self::Item> {
-        self.0.next_back().map(|t| Thunk::from(t).map(self.1).into_thunk())
+        self.0.next_back()
+            .map(|t| Thunk::from(t).map(self.1))
+            .map(Thunk::new)
     }
 }
 impl<R, I: ExactSizeIterator, F: FnMut(I::Item) -> R + Copy> ExactSizeIterator for MapThunk<I, F> {

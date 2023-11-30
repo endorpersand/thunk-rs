@@ -64,7 +64,7 @@ pub trait Thunkable {
     fn resolve(self) -> Self::Item;
 
     /// Wraps this `Thunkable` into a [`Thunk`].
-    fn into_thunk(self) -> Thunk<Self::Item, Self> 
+    fn into_thunk(self) -> Thunk<Self::Item, impl Thunkable<Item=Self::Item>> 
         where Self: Sized
     {
         Thunk::new(self)
@@ -425,6 +425,10 @@ impl<F: Thunkable> Thunkable for Thunk<F::Item, F> {
 
     fn resolve(self) -> Self::Item {
         self.dethunk()
+    }
+    #[allow(refining_impl_trait)]
+    fn into_thunk(self) -> Self {
+        self
     }
     fn into_thunk_any<'a>(self) -> ThunkAny<'a, Self::Item> 
             where Self: 'a 
